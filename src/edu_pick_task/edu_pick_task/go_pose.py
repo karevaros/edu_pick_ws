@@ -5,6 +5,7 @@
     ros2 run edu_pick_task go_pose observe
     ros2 run edu_pick_task go_pose --jog wrist3 5    # 관절 하나를 +5° (작게 움직여 보기)
     ros2 run edu_pick_task go_pose --show            # 지금 관절값(도) 출력만
+    ros2 run edu_pick_task go_pose --grip 100        # 그리퍼 벌림 % (100 = 최대 10 cm · 0 = 닫힘)
     ros2 run edu_pick_task go_pose home --yes        # 확인 없이 실행 (가상 모드 전용으로 쓸 것)
 
 기본은 '계획 → RViz 에 경로 표시 → Enter → 실행' (pick_place --step 과 같은 방식).
@@ -29,10 +30,11 @@ def main():
     ap.add_argument("pose", nargs="?", help="home / observe")
     ap.add_argument("--jog", nargs=2, metavar=("JOINT", "DEG"), help="관절 하나를 DEG 도 만큼")
     ap.add_argument("--show", action="store_true", help="지금 관절값만 출력")
+    ap.add_argument("--grip", type=float, metavar="PCT", help="그리퍼 벌림 %% (0~100)")
     ap.add_argument("--yes", action="store_true", help="확인 없이 실행")
     args, ros_args = ap.parse_known_args()
-    if not (args.pose or args.jog or args.show):
-        ap.error("자세 이름, --jog, --show 중 하나를 주세요")
+    if not (args.pose or args.jog or args.show or args.grip is not None):
+        ap.error("자세 이름, --jog, --grip, --show 중 하나를 주세요")
 
     rclpy.init(args=[sys.argv[0]] + ros_args, signal_handler_options=SignalHandlerOptions.NO)
     node = PickPlace(step_mode=not args.yes)
@@ -49,6 +51,13 @@ def main():
         cur = [node.joints[j] for j in ARM_JOINTS]
         print("지금 관절[deg]: " + "  ".join(f"{j} {math.degrees(v):7.2f}" for j, v in zip(ARM_JOINTS, cur)))
         if args.show:
+            return
+        if args.grip is not None:
+            from edu_pick_task.pick_place import GRIPPER_OPEN
+            pct = min(100.0, max(0.0, args.grip))
+            print(f"그리퍼 벌림 {pct:.0f} %")
+            node.gripper(GRIPPER_OPEN * pct / 100.0, f"그리퍼 {pct:.0f}%")
+            print("완료 — 명령 전송(RG2 는 도달 여부를 알려 주지 않으니 눈으로 확인)")
             return
         if args.jog:
             name, deg = args.jog[0], float(args.jog[1])

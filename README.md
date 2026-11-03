@@ -172,6 +172,7 @@ ros2 run edu_pick_task pick_place --step
 ```bash
 ros2 run edu_pick_task go_pose --show            # 지금 관절값(도)
 ros2 run edu_pick_task go_pose --jog wrist3 5    # 관절 하나를 +5° (±30° 이내)
+ros2 run edu_pick_task go_pose --grip 100        # 그리퍼 벌림 % (100 = 최대 10 cm · 0 = 닫힘)
 ros2 run edu_pick_task go_pose home              # scene.yaml 의 home / observe 자세로
 ```
 카메라 없이 팔만 확인할 때는 launch 에 `camera:=false`.

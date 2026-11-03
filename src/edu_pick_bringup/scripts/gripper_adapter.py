@@ -11,9 +11,11 @@
     /gripper_controller/follow_joint_trajectory  (액션 서버)  ← 실습 노드가 부른다
     /gripper_controller/joint_states             (토픽)       → 손가락 TF 표시용
 
-■ 명령 형식 (실기 펜던트에서 확인, 2026-10-29)
-    gripper_macro 12,0,1,0,<벌림%>,<힘%>,0,0,0,0
-    = 모델 12(OnRobot RG2) · 연결점 0(툴 플랜지) · 기능 1(구동) · 0 · 벌림[%] · 힘[%] · 0×4
+■ 명령 형식 (실기 펜던트 스크립트에서 확인, 2026-10-29 · 2026-11-03 사진 재확인)
+    gripper_macro 12,0,0,0,0,0,0,0,0,0           ← 기능 0 = 초기화 (첫 명령 전에 한 번)
+    gripper_macro 12,0,1,0,<벌림%>,<힘%>,0,0,0,0 ← 기능 1 = 구동
+    = 모델 12(OnRobot RG2) · 연결점 0(툴 플랜지) · 기능 · 0 · 벌림[%] · 힘[%] · 0×4
+    펜던트 예: 12,0,1,0,48,54,… (벌림 48 % · 힘 54 %) / 12,0,1,0,100,100,… (최대 벌림)
 
 ■ 관절각 ↔ 벌림 %
     rg2_finger_joint1 = 0.0 rad → 0 %(닫힘),  0.6 rad → 100 %(열림)
@@ -53,11 +55,13 @@ class GripperAdapter(Node):
         self.declare_parameter("force_pct", 40)         # 힘 [%] (RG2 최대 40 N 의 비율)
         self.declare_parameter("settle_sec", 1.5)       # 명령 후 기다리는 시간
         self.declare_parameter("cmd_move", "gripper_macro 12,0,1,0,{ratio_pct:.0f},{force_pct},0,0,0,0")
+        self.declare_parameter("cmd_init", "gripper_macro 12,0,0,0,0,0,0,0,0,0")   # 빈 값이면 보내지 않음
 
         g = lambda n: self.get_parameter(n).value
         self.dry = bool(g("dry_run"))
         self.j_closed, self.j_open = float(g("joint_closed")), float(g("joint_open"))
         self._pos = self.j_open
+        self._initialized = False
         self._cb = ReentrantCallbackGroup()
 
         self._cli = None
@@ -104,6 +108,15 @@ class GripperAdapter(Node):
             result.error_code = FollowJointTrajectory.Result.INVALID_JOINTS
             return result
         target = float(traj.points[-1].positions[traj.joint_names.index(JOINT)])
+        # 첫 구동 전에 초기화 명령을 한 번 (펜던트 스크립트와 같은 순서)
+        init = self.get_parameter("cmd_init").value
+        if init and not self._initialized:
+            if not self._send(init):
+                gh.abort()
+                result.error_code = FollowJointTrajectory.Result.PATH_TOLERANCE_VIOLATED
+                return result
+            time.sleep(float(self.get_parameter("settle_sec").value))
+            self._initialized = True
         script = self.get_parameter("cmd_move").value.format(
             ratio_pct=self._ratio(target) * 100.0, force_pct=int(self.get_parameter("force_pct").value))
         if not self._send(script):
