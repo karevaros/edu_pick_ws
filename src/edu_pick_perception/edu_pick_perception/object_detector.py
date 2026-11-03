@@ -217,9 +217,10 @@ class ObjectDetector(Node):
         o.top_center = Point(x=float(cx), y=float(cy), z=table_z + top)
         o.width, o.length, o.height = width, max(length, width), top   # 윗면 기준 크기(표시용)
         # 집을 수 있나: 옆면까지 본 외곽 폭과 윗면 폭 중 큰 쪽으로 보수적으로 판정
-        o.graspable = max(width, float(min(a_all, b_all))) <= float(c["max_grip_width"])
+        grip_w = max(width, float(min(a_all, b_all)))
+        o.graspable = grip_w <= float(c["max_grip_width"])
         if not o.graspable:
-            o.note = "너무 넓음"
+            o.note = f"너무 넓음(외곽 {grip_w * 100:.1f} cm > {float(c['max_grip_width']) * 100:.1f} cm)"
         return o
 
     # ------------------------------------------------------------------ 발행

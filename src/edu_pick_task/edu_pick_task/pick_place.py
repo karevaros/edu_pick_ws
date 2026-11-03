@@ -4,6 +4,7 @@
     ros2 run edu_pick_task pick_place              # 연속 실행
     ros2 run edu_pick_task pick_place --step       # 움직이기 직전마다 멈춤: 경로를 RViz 로 확인 → Enter (실기 권장)
     ros2 run edu_pick_task pick_place --count 2    # 물체 2개를 차례로 옮김
+    ros2 run edu_pick_task pick_place --shape round  # 원형(캔·병 윗면·공·사과)만 집는다
 
 ■ 시나리오 (12단계)
    1 초기위치      관절 목표  (MoveIt 계획)
@@ -57,7 +58,7 @@ from edu_pick_msgs.msg import DetectedObjectArray
 
 ARM_JOINTS = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
 GROUP, TIP, WORLD = "arm", "tool_tip", "world"
-GRIPPER_OPEN, GRIPPER_CLOSED = 0.6, 0.0          # rg2_finger_joint1 [rad] (100 % / 0 %)
+GRIPPER_OPEN, GRIPPER_CLOSED = 0.6, 0.0          # rg2_finger_joint1 [rad] (100 % / 0 %) — 물리적 끝값
 
 
 class StepFailed(Exception):
@@ -70,7 +71,7 @@ def down_quat(yaw):
 
 
 class PickPlace(Node):
-    def __init__(self, step_mode=False):
+    def __init__(self, step_mode=False, shape=None):
         super().__init__("pick_place")
         from ament_index_python.packages import get_package_share_directory
         import os
@@ -79,8 +80,13 @@ class PickPlace(Node):
         with open(self.get_parameter("scene_file").value) as f:
             self.scene = yaml.safe_load(f)
         self.m = self.scene["motion"]
+        g = self.scene["gripper"]
+        # 시나리오의 '열기·잡기' 벌림 (scene.yaml gripper.open_pct / close_pct)
+        self.grip_open = GRIPPER_OPEN * float(g.get("open_pct", 100)) / 100.0
+        self.grip_close = GRIPPER_OPEN * float(g.get("close_pct", 0)) / 100.0
         self.table_z = float(self.scene["table"]["top_z"])
         self.step_mode = step_mode
+        self.shape_filter = shape        # None = 모양 무관 / "round" / "box"
 
         self.joints = {}
         self.active_goal = None
@@ -416,7 +422,7 @@ class PickPlace(Node):
             why = "하역 구역(이미 옮긴 물체)" if in_place else o.note
             self.say(f"   · {o.id}: {o.shape:5s} 폭 {o.width * 100:4.1f} cm  높이 {o.height * 100:4.1f} cm  "
                      f"위치 ({o.top_center.x:.3f}, {o.top_center.y:.3f})" + (f"  ✕ {why}" if why else ""))
-            if o.graspable and not in_place:
+            if o.graspable and not in_place and (self.shape_filter is None or o.shape == self.shape_filter):
                 ok.append(o)
         if not ok:
             return None
@@ -490,14 +496,14 @@ class PickPlace(Node):
                      f"{(grip_z - advance - self.table_z) * 100:.1f} cm)")
 
             self.step(4, "물체 위로 이동 (그리퍼 열기)")
-            self.gripper(GRIPPER_OPEN, "그리퍼 열기")
+            self.gripper(self.grip_open, "그리퍼 열기")
             self.move_above(obj.top_center.x, obj.top_center.y, above_z, yaw, "물체 위 이동")
 
             self.step(5, f"하강 {(above_z - grip_z) * 100:.1f} cm")
             self.move_linear(grip_z - above_z, "하강")
 
             self.step(6, "잡기")
-            self.gripper(GRIPPER_CLOSED, "잡기")
+            self.gripper(self.grip_close, "잡기")
             self.attach_held(obj, obj.top_center.z - grip_z)
 
             self.step(7, "상승")
@@ -515,7 +521,7 @@ class PickPlace(Node):
             self.move_linear(release_z - place_above, "하강")
 
             self.step(10, "놓기")
-            self.gripper(GRIPPER_OPEN, "놓기")
+            self.gripper(self.grip_open, "놓기")
             self.detach_held()
 
             self.step(11, "상승")
@@ -546,12 +552,13 @@ def main():
     ap = argparse.ArgumentParser(description="Pick and place 시나리오")
     ap.add_argument("--step", action="store_true", help="단계마다 Enter 로 진행")
     ap.add_argument("--count", type=int, default=1, help="옮길 물체 개수")
+    ap.add_argument("--shape", choices=["round", "box"], help="이 모양만 집는다")
     args, ros_args = ap.parse_known_args()
 
     # Ctrl+C 를 rclpy 가 가로채면 통신이 먼저 끊겨 '정지 명령'을 못 보낸다 → 직접 처리
     from rclpy.signals import SignalHandlerOptions
     rclpy.init(args=[sys.argv[0]] + ros_args, signal_handler_options=SignalHandlerOptions.NO)
-    node = PickPlace(step_mode=args.step)
+    node = PickPlace(step_mode=args.step, shape=args.shape)
     ex = MultiThreadedExecutor()
     ex.add_node(node)
     threading.Thread(target=ex.spin, daemon=True).start()
