@@ -479,10 +479,15 @@ class PickPlace(Node):
             # 잡는 높이(손끝): 윗면에서 grip_depth 아래. 공처럼 낮고 둥근 물체는 가운데 높이.
             ball_like = obj.shape == "round" and obj.height < 1.3 * obj.width
             grip_z = obj.top_center.z - (obj.height * 0.5 if ball_like else float(m["grip_depth"]))
-            grip_z = max(grip_z, self.table_z + float(m["min_tip_clearance"]))
+            # RG2 는 닫을수록 손끝이 앞(아래)으로 나온다 — 실측 2점(10 cm 벌림 20.5 cm · 0 cm 24 cm) 사이 직선 근사.
+            # 물체 폭까지 닫혔을 때의 손끝도 테이블 위 min_tip_clearance 이상이어야 한다.
+            g = self.scene["gripper"]
+            advance = (g["tip_closed"] - g["tip_open"]) * (1.0 - min(obj.width / g["max_open"], 1.0))
+            grip_z = max(grip_z, self.table_z + float(m["min_tip_clearance"]) + advance)
             above_z = obj.top_center.z + float(m["approach_height"])
             self.say(f"   → 선택: {obj.id} ({obj.shape}) · 집기 방향 {math.degrees(yaw):.0f}° · "
-                     f"손끝 높이 {grip_z:.3f} m")
+                     f"손끝 높이 {grip_z:.3f} m (닫으면 {advance * 100:.1f} cm 더 내려감 → 테이블 위 "
+                     f"{(grip_z - advance - self.table_z) * 100:.1f} cm)")
 
             self.step(4, "물체 위로 이동 (그리퍼 열기)")
             self.gripper(GRIPPER_OPEN, "그리퍼 열기")

@@ -6,10 +6,9 @@
     world ─┬─ table                         (테이블, 충돌 검사용 · 윗면 높이 = table.top_z)
            ├─ robot_stand                   (로봇 받침)
            └─ link0 ─ … ─ link6 ─ tcp       (RB5 팔 · 레인보우 공식 모델 · tcp = 툴 플랜지 면)
-                                   ├─ rg2_adapter                (플랜지-그리퍼 어댑터)
                                    └─ rg2_hand ─┬─ rg2_leftfinger / rg2_rightfinger
                                                 ├─ tool_tip   ★ 집기 기준점(손끝). z축 = 접근 방향, x축 = 닫히는 방향
-                                                └─ d405_link  (카메라. 내부 광학 프레임은 카메라 드라이버가 발행)
+                                   └─ flange_hand ─ d405_link   (카메라 — 플랜지 쪽 브래킷에 고정. 내부 광학 프레임은 드라이버가 발행)
 
   xacro 인자
     use_fake_hardware  true = 가짜 하드웨어(로봇 없이 연습) / false = 실제 제어박스
@@ -81,34 +80,18 @@
     <origin xyz="0 0 0"/>
   </joint>
 
-  <!-- ③ RG2 그리퍼 — tcp(툴 플랜지 면)에 어댑터를 끼워 장착. 접근 방향 = rg2_hand +x = tcp -y -->
-  <xacro:property name="adapter" value="${scene['gripper_adapter_length']}"/>
-  <link name="rg2_adapter">
-    <visual>
-      <origin xyz="0 ${-adapter/2} 0" rpy="${pi/2} 0 0"/>
-      <geometry><cylinder radius="0.032" length="${max(adapter, 0.001)}"/></geometry>
-      <material name="adapter_gray"><color rgba="0.4 0.4 0.4 1"/></material>
-    </visual>
-    <collision>
-      <origin xyz="0 ${-adapter/2} 0" rpy="${pi/2} 0 0"/>
-      <geometry><cylinder radius="0.032" length="${max(adapter, 0.001)}"/></geometry>
-    </collision>
-  </link>
-  <joint name="rg2_adapter_joint" type="fixed">
-    <parent link="tcp"/>
-    <child link="rg2_adapter"/>
-    <origin xyz="0 0 0"/>
-  </joint>
+  <!-- ③ RG2 그리퍼 — tcp(툴 플랜지 면)에 바로 장착. 접근 방향 = rg2_hand +x = tcp -y -->
   <xacro:onrobot_rg2 parent="tcp">
-    <origin xyz="0 ${-adapter} 0" rpy="0 0 ${-pi/2}"/>
+    <origin xyz="0 0 0" rpy="0 0 ${-pi/2}"/>
   </xacro:onrobot_rg2>
 
-  <!-- ④ 집기 기준점: 손끝. MoveIt 은 이 프레임을 목표로 계획한다 -->
+  <!-- ④ 집기 기준점: 그리퍼를 최대로 벌렸을 때의 손끝(실측 20.5 cm). MoveIt 은 이 프레임을 목표로 계획한다.
+       닫으면 실제 손끝은 이보다 최대 3.5 cm 앞으로 나온다(pick_place 가 잡는 높이에 반영) -->
   <link name="tool_tip"/>
   <joint name="tool_tip_joint" type="fixed">
     <parent link="rg2_hand"/>
     <child link="tool_tip"/>
-    <origin xyz="${scene['tool_tip_offset']} 0 0" rpy="${pi/2} 0 ${pi/2}"/>
+    <origin xyz="${scene['gripper']['tip_open']} 0 0" rpy="${pi/2} 0 ${pi/2}"/>
   </joint>
 
   <!-- ⑤ 손목 카메라 D405 (외형은 상자로 근사: 42×42×23 mm) -->
@@ -119,8 +102,16 @@
     </visual>
     <collision><geometry><box size="0.023 0.042 0.042"/></geometry></collision>
   </link>
+  <!-- 카메라 기준 = 툴 플랜지(축 방향은 그리퍼 몸체와 같게 돌린 프레임 flange_hand).
+       2026-11-03 실기: 카메라로 잰 테이블 높이 -0.091 m ↔ 실측 받침 -0.085 m (6 mm 차) -->
+  <link name="flange_hand"/>
+  <joint name="flange_hand_joint" type="fixed">
+    <parent link="tcp"/>
+    <child link="flange_hand"/>
+    <origin xyz="0 0 0" rpy="0 0 ${-pi/2}"/>
+  </joint>
   <joint name="d405_mount_joint" type="fixed">
-    <parent link="rg2_hand"/>
+    <parent link="flange_hand"/>
     <child link="d405_link"/>
     <origin xyz="${cam['xyz'][0]} ${cam['xyz'][1]} ${cam['xyz'][2]}"
             rpy="${cam['rpy_deg'][0]*deg} ${cam['rpy_deg'][1]*deg} ${cam['rpy_deg'][2]*deg}"/>

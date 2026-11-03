@@ -124,7 +124,15 @@ class ObjectDetector(Node):
 
         # ③ 물체 마스크
         hgt = Z - table_z
-        mask = (roi & (hgt > c["min_height"]) & (hgt < c["max_height"])).astype(np.uint8) * 255
+        # 손가락 제외: 위에서 내려다보므로 물체는 항상 손끝(tool_tip)보다 아래에 있다.
+        #   손끝보다 1.5 cm 위의 점은 그리퍼 자신(손가락이 카메라 시야에 들어온다 — 실기에서 확인)
+        z_max = np.inf
+        try:
+            tip = self.tf.lookup_transform(self.world, "tool_tip", Time.from_msg(msg.header.stamp))
+            z_max = tip.transform.translation.z - 0.015
+        except Exception:
+            pass
+        mask = (roi & (hgt > c["min_height"]) & (hgt < c["max_height"]) & (Z < z_max)).astype(np.uint8) * 255
         k5 = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k5)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5)
@@ -137,10 +145,15 @@ class ObjectDetector(Node):
                 continue
             blob = np.zeros((H, W), np.uint8)
             cv2.drawContours(blob, [cnt], -1, 255, -1)
-            sel = (blob > 0) & (mask > 0)
+            # 깊이 카메라는 물체 경계에 '튀는 점'(앞뒤 거리가 섞인 점)을 만든다 → 테두리 2 px 를 깎고,
+            # 그래도 남은 먼 점은 중심 거리로 버린다 (실기에서 1~2% 의 점이 사과를 29 cm 로 늘렸다)
+            core = cv2.erode(blob, np.ones((5, 5), np.uint8))
+            sel = (core > 0) & (mask > 0)
             pts = P[sel]
             if len(pts) < 50:
                 continue
+            d = np.linalg.norm(pts[:, :2] - np.median(pts[:, :2], axis=0), axis=1)
+            pts = pts[d <= 1.5 * np.percentile(d, 90)]
             o = self.describe(pts, table_z)
             if o is None:
                 continue

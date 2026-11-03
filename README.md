@@ -180,7 +180,7 @@ ros2 run edu_pick_task go_pose home              # scene.yaml 의 home / observe
 0. `mode:=real camera:=false` (Simulation) → `go_pose --jog wrist3 5` → `go_pose home` → `go_pose observe` 로 펜던트 가상 로봇의 경로 확인 → Real 에서 `--jog` 부터
 1. `mode:=real` (Simulation) → `pick_place --step` 으로 12단계 전체. 인식 위치와 실제 물체 위치 차이를 확인한다(1 cm 이내면 양호).
 2. `cb_simulation:=false` → `--step` 으로 **물체 없이** 한 번 → 물체 놓고 한 번
-3. 잡는 높이가 안 맞으면 `motion.grip_depth`, 손끝 위치가 체계적으로 어긋나면 `tool_tip_offset`·`camera_mount` 를 확인한다.
+3. 잡는 높이가 안 맞으면 `motion.grip_depth`, 손끝 위치가 체계적으로 어긋나면 `gripper.tip_open`·`tip_closed`(플랜지→손끝 실측)·`camera_mount` 를 확인한다. RG2 는 닫을수록 손끝이 앞으로 나온다(실측 20.5 → 24 cm).
 
 ---
 
