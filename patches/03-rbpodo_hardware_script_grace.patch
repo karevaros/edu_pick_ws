@@ -1,0 +1,84 @@
+diff -ruN a/rbpodo_hardware/include/rbpodo_hardware/rbpodo_hardware_interface.hpp b/rbpodo_hardware/include/rbpodo_hardware/rbpodo_hardware_interface.hpp
+--- a/rbpodo_hardware/include/rbpodo_hardware/rbpodo_hardware_interface.hpp	2026-10-29 15:29:42.727290993 +0900
++++ b/rbpodo_hardware/include/rbpodo_hardware/rbpodo_hardware_interface.hpp	2026-10-29 15:29:42.805289772 +0900
+@@ -112,6 +112,9 @@
+   bool last_sent_valid_{false};
+   bool clamp_warned_{false};
+ 
++  // [rda patch] eval(그리퍼 등) 직후 이 시간[s] 동안은 robot_state 1 복귀를 오류로 보지 않는다.
++  double script_grace_{1.0};
++
+   CommandInterfaceState joint_position_interface_state_;
+   CommandInterfaceState joint_velocity_interface_state_;
+   CommandInterfaceState joint_effort_interface_state_;
+diff -ruN a/rbpodo_hardware/include/rbpodo_hardware/robot.hpp b/rbpodo_hardware/include/rbpodo_hardware/robot.hpp
+--- a/rbpodo_hardware/include/rbpodo_hardware/robot.hpp	2026-10-29 15:29:42.734290883 +0900
++++ b/rbpodo_hardware/include/rbpodo_hardware/robot.hpp	2026-10-29 15:29:42.816289600 +0900
+@@ -161,6 +161,10 @@
+ 
+   bool eval(const std::string& script);
+ 
++  // [rda patch] 마지막 eval(스크립트) 송신 시각 [steady_clock ns] — 0 이면 없음.
++  // 그리퍼 명령(gripper_macro)도 eval 로 같은 명령 채널을 타며 servo 모드를 끝낸다.
++  int64_t last_eval_ns() const { return last_eval_ns_.load(); }
++
+   bool task_load(const std::string& program_name, double timeout = -1.);
+ 
+   bool task_pause();
+@@ -237,6 +241,7 @@
+   std::chrono::steady_clock::time_point state_updated_time_;
+   std::thread read_thread_;
+   std::atomic<bool> read_thread_stop_;
++  std::atomic<int64_t> last_eval_ns_{0};
+   std::mutex lock_;
+   bool updated_{false};
+   std::mutex read_lock_;
+diff -ruN a/rbpodo_hardware/src/rbpodo_hardware_interface.cpp b/rbpodo_hardware/src/rbpodo_hardware_interface.cpp
+--- a/rbpodo_hardware/src/rbpodo_hardware_interface.cpp	2026-10-29 15:29:42.721291087 +0900
++++ b/rbpodo_hardware/src/rbpodo_hardware_interface.cpp	2026-10-29 15:29:42.800289850 +0900
+@@ -134,6 +134,15 @@
+       }
+       RCLCPP_INFO(getLogger(), "max_joint_velocity = %.3f rad/s (0 = off)", max_joint_velocity_);
+     }
++    auto sg_it = info_.hardware_parameters.find("script_grace");
++    if (sg_it != info_.hardware_parameters.end()) {
++      script_grace_ = atof(sg_it->second.c_str());
++      if (!(script_grace_ >= 0.0 && script_grace_ <= 10.0)) {
++        RCLCPP_FATAL(getLogger(), "Parameter 'script_grace' out of range [0, 10]: %s", sg_it->second.c_str());
++        return CallbackReturn::ERROR;
++      }
++    }
++    RCLCPP_INFO(getLogger(), "script_grace = %.2f s", script_grace_);
+   }
+ 
+   robot_node_ = std::make_shared<RobotNode>(rclcpp::NodeOptions(), robot_);
+@@ -330,6 +339,17 @@
+   }
+   auto data = robot_->read_once();
+   if (running) {
++    // [rda patch] 우리가 보낸 스크립트(그리퍼 gripper_macro 등)는 같은 명령 채널에서 servo 모드를
++    // 끝내 robot_state 를 1 로 돌린다(2026-10-29 실측: 송신 44ms 뒤 아래 ERROR 로 하드웨어 사망).
++    // 유예 시간 동안은 '모드 전환 직후'와 똑같이 취급한다 — 다음 servo_j 가 서보를 다시 연다.
++    const int64_t le = robot_->last_eval_ns();
++    if (le != 0) {
++      const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count();
++      if ((now_ns - le) * 1e-9 < script_grace_) {
++        mode_changed_ = true;
++      }
++    }
+     if (mode_changed_) {
+       if (data.sdata.robot_state != 1) {
+         mode_changed_ = false;
+diff -ruN a/rbpodo_hardware/src/robot.cpp b/rbpodo_hardware/src/robot.cpp
+--- a/rbpodo_hardware/src/robot.cpp	2026-10-29 15:29:42.731290930 +0900
++++ b/rbpodo_hardware/src/robot.cpp	2026-10-29 15:29:42.810289693 +0900
+@@ -161,6 +161,8 @@
+ 
+ bool Robot::eval(const string& script) {
+   scoped_lock sl(lock_);
++  last_eval_ns_.store(chrono::duration_cast<chrono::nanoseconds>(
++      chrono::steady_clock::now().time_since_epoch()).count());
+   auto ret = cobot_.eval(rc_, script);
+   rc_error_check();
+   return ret.is_success();

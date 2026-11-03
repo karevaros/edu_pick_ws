@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!--
+  실습용 로봇 모델: 테이블 + RB5-850e + OnRobot RG2 + 손목 RealSense D405
+
+  프레임 구조 (TF 트리)
+    world ─┬─ table                         (테이블, 충돌 검사용)
+           └─ link0 ─ … ─ link6 ─ tcp       (RB5 팔 · 레인보우 공식 모델)
+                                   └─ rg2_hand ─┬─ rg2_leftfinger / rg2_rightfinger
+                                                ├─ tool_tip   ★ 집기 기준점(손끝). z축 = 접근 방향, x축 = 닫히는 방향
+                                                └─ d405_link  (카메라. 내부 광학 프레임은 카메라 드라이버가 발행)
+
+  xacro 인자
+    use_fake_hardware  true = 가짜 하드웨어(로봇 없이 연습) / false = 실제 제어박스
+    robot_ip           제어박스 IP
+    cb_simulation      true = 제어박스 Simulation 모드(팔 안 움직임) / false = Real(실제 구동)
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="edu_pick">
+  <xacro:arg name="use_fake_hardware" default="true"/>
+  <xacro:arg name="robot_ip" default="192.168.35.100"/>
+  <xacro:arg name="cb_simulation" default="true"/>
+  <xacro:arg name="scene_file" default="$(find edu_pick_description)/config/scene.yaml"/>
+
+  <xacro:property name="scene" value="${xacro.load_yaml('$(arg scene_file)')}"/>
+  <xacro:property name="tb" value="${scene['table']}"/>
+  <xacro:property name="cam" value="${scene['camera_mount']}"/>
+  <xacro:property name="deg" value="${pi/180.0}"/>
+
+  <xacro:include filename="$(find rbpodo_description)/robots/rb_6dof.xacro"/>
+  <xacro:include filename="$(find rbpodo_description)/robots/rb_6dof.ros2_control.xacro"/>
+  <xacro:include filename="$(find edu_pick_description)/urdf/rg2.xacro"/>
+
+  <link name="world"/>
+
+  <!-- ① 테이블 -->
+  <link name="table">
+    <visual>
+      <origin xyz="0 0 ${-tb['thickness']/2}"/>
+      <geometry><box size="${tb['size_xy'][0]} ${tb['size_xy'][1]} ${tb['thickness']}"/></geometry>
+      <material name="wood"><color rgba="0.76 0.62 0.45 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${-tb['thickness']/2}"/>
+      <geometry><box size="${tb['size_xy'][0]} ${tb['size_xy'][1]} ${tb['thickness']}"/></geometry>
+    </collision>
+  </link>
+  <joint name="table_joint" type="fixed">
+    <parent link="world"/>
+    <child link="table"/>
+    <origin xyz="${tb['center_xy'][0]} ${tb['center_xy'][1]} ${tb['top_z']}"/>
+  </joint>
+
+  <!-- ② RB5-850e (레인보우로보틱스 rbpodo_description, Apache-2.0) -->
+  <xacro:rb_6dof model_id="rb5_850e" prefix="" tcp_name="tcp" tcp_xyz="0 -0.0967 0" tcp_rpy="0 0 0"/>
+  <xacro:rb_6dof_ros2_control prefix="" robot_ip="$(arg robot_ip)"
+      cb_simulation="$(arg cb_simulation)" use_fake_hardware="$(arg use_fake_hardware)"
+      fake_sensor_commands="false"/>
+  <joint name="world_to_link0" type="fixed">
+    <parent link="world"/>
+    <child link="link0"/>
+    <origin xyz="0 0 ${tb['top_z']}"/>
+  </joint>
+
+  <!-- ③ RG2 그리퍼 — tcp 에 장착(접근 방향 = rg2_hand +x) -->
+  <xacro:onrobot_rg2 parent="tcp">
+    <origin xyz="0 0 0" rpy="0 0 ${-pi/2}"/>
+  </xacro:onrobot_rg2>
+
+  <!-- ④ 집기 기준점: 손끝. MoveIt 은 이 프레임을 목표로 계획한다 -->
+  <link name="tool_tip"/>
+  <joint name="tool_tip_joint" type="fixed">
+    <parent link="rg2_hand"/>
+    <child link="tool_tip"/>
+    <origin xyz="${scene['tool_tip_offset']} 0 0" rpy="${pi/2} 0 ${pi/2}"/>
+  </joint>
+
+  <!-- ⑤ 손목 카메라 D405 (외형은 상자로 근사: 42×42×23 mm) -->
+  <link name="d405_link">
+    <visual>
+      <geometry><box size="0.023 0.042 0.042"/></geometry>
+      <material name="cam_gray"><color rgba="0.3 0.3 0.3 1"/></material>
+    </visual>
+    <collision><geometry><box size="0.023 0.042 0.042"/></geometry></collision>
+  </link>
+  <joint name="d405_mount_joint" type="fixed">
+    <parent link="rg2_hand"/>
+    <child link="d405_link"/>
+    <origin xyz="${cam['xyz'][0]} ${cam['xyz'][1]} ${cam['xyz'][2]}"
+            rpy="${cam['rpy_deg'][0]*deg} ${cam['rpy_deg'][1]*deg} ${cam['rpy_deg'][2]*deg}"/>
+  </joint>
+</robot>

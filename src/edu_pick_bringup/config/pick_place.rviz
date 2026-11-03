@@ -1,0 +1,86 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.1
+      Plane Cell Count: 20
+      Reference Frame: world
+      Value: true
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: TF (tool_tip)
+      Enabled: true
+      Marker Scale: 0.3
+      Show Names: false
+      Frames:
+        All Enabled: false
+        tool_tip:
+          Value: true
+        world:
+          Value: true
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: 카메라 점군
+      Enabled: true
+      Topic:
+        Value: /camera/d405/depth/color/points
+      Color Transformer: RGB8
+      Size (m): 0.003
+      Style: Points
+      Size (Pixels): 2
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: 인식 결과
+      Enabled: true
+      Topic:
+        Value: /edu_pick/objects_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: 가상 물체(sim)
+      Enabled: true
+      Topic:
+        Value: /edu_pick/sim_objects
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: 인식 과정(debug_image)
+      Enabled: true
+      Topic:
+        Value: /edu_pick/debug_image
+      Value: true
+    - Class: moveit_rviz_plugin/Trajectory
+      Name: 계획된 경로
+      Enabled: true
+      Robot Description: robot_description
+      Trajectory Topic: /display_planned_path
+      Loop Animation: true
+      Robot Alpha: 0.4
+      Show Robot Visual: true
+      State Display Time: 0.05 s
+      Value: true
+  Global Options:
+    Fixed Frame: world
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 2.0
+      Focal Point: {X: 0.35, Y: 0.0, Z: 0.2}
+      Pitch: 0.55
+      Yaw: 3.9
+Window Geometry:
+  Width: 1500
+  Height: 950

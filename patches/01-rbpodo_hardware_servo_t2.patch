@@ -1,0 +1,27 @@
+diff --git a/rbpodo_hardware/src/rbpodo_hardware_interface.cpp b/rbpodo_hardware/src/rbpodo_hardware_interface.cpp
+index dd2f034..16d9b58 100644
+--- a/rbpodo_hardware/src/rbpodo_hardware_interface.cpp
++++ b/rbpodo_hardware/src/rbpodo_hardware_interface.cpp
+@@ -93,6 +93,22 @@ hardware_interface::CallbackReturn RBPodoHardwareInterface::on_init(const hardwa
+       return CallbackReturn::ERROR;
+     }
+     RCLCPP_INFO(getLogger(), "Successfully connected to robot");
++
++    // [rda patch] servo_j 유지시간 t2 를 하드웨어 파라미터로 받는다(없으면 SDK 기본 0.03s).
++    // 무선 링크에서는 도착 간격이 t1+t2(40ms)를 넘는 순간 제어박스가 서보를 끝내
++    // robot_state 가 1 로 돌아가고 write() 가 "Unexpected robot state changed" 로 죽는다.
++    auto t2_it = info_.hardware_parameters.find("servo_t2");
++    if (t2_it != info_.hardware_parameters.end()) {
++      const double t2 = atof(t2_it->second.c_str());
++      if (!(t2 >= 0.02 && t2 <= 0.2)) {
++        RCLCPP_FATAL(getLogger(), "Parameter 'servo_t2' out of range [0.02, 0.2]: %s", t2_it->second.c_str());
++        return CallbackReturn::ERROR;
++      }
++      Robot::JointPositionControllerConfig jpc;
++      jpc.t2 = t2;
++      robot_->set_joint_position_controller_config(jpc);
++      RCLCPP_INFO(getLogger(), "servo_t2 = %.3f s (joint position)", t2);
++    }
+   }
+ 
+   robot_node_ = std::make_shared<RobotNode>(rclcpp::NodeOptions(), robot_);

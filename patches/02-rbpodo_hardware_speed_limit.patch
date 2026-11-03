@@ -1,0 +1,89 @@
+diff -ruN a/rbpodo_hardware/include/rbpodo_hardware/rbpodo_hardware_interface.hpp b/rbpodo_hardware/include/rbpodo_hardware/rbpodo_hardware_interface.hpp
+--- a/rbpodo_hardware/include/rbpodo_hardware/rbpodo_hardware_interface.hpp	2026-10-29 14:35:49.214357275 +0900
++++ b/rbpodo_hardware/include/rbpodo_hardware/rbpodo_hardware_interface.hpp	2026-10-29 14:35:49.241357741 +0900
+@@ -105,6 +105,13 @@
+   std::vector<CommandInterfaceInfo> command_interface_infos_;
+   bool mode_changed_{false};
+ 
++  // [rda patch] 관절 속도 상한 [rad/s] — 0 이면 끔. 제어박스 속도바는 move_servo_j 스트림에
++  // 적용되지 않아서(2026-10-29 실측) 로봇으로 나가는 마지막 단계에서 직접 자른다.
++  double max_joint_velocity_{0.0};
++  std::array<double, kNumberOfJoints> last_sent_positions_{};
++  bool last_sent_valid_{false};
++  bool clamp_warned_{false};
++
+   CommandInterfaceState joint_position_interface_state_;
+   CommandInterfaceState joint_velocity_interface_state_;
+   CommandInterfaceState joint_effort_interface_state_;
+diff -ruN a/rbpodo_hardware/src/rbpodo_hardware_interface.cpp b/rbpodo_hardware/src/rbpodo_hardware_interface.cpp
+--- a/rbpodo_hardware/src/rbpodo_hardware_interface.cpp	2026-10-29 14:35:49.212357241 +0900
++++ b/rbpodo_hardware/src/rbpodo_hardware_interface.cpp	2026-10-29 14:35:49.239357707 +0900
+@@ -109,6 +109,31 @@
+       robot_->set_joint_position_controller_config(jpc);
+       RCLCPP_INFO(getLogger(), "servo_t2 = %.3f s (joint position)", t2);
+     }
++
++    // [rda patch] 속도바 — 생성자가 접속 직후 1.0(100%)을 건다. 이 값은 펜던트·move_j 계열에만
++    // 먹고 servo_j 스트림엔 안 먹는다(실측) → 실제 상한은 아래 max_joint_velocity 가 맡는다.
++    auto sb_it = info_.hardware_parameters.find("speed_bar");
++    if (sb_it != info_.hardware_parameters.end()) {
++      const double sb = atof(sb_it->second.c_str());
++      if (!(sb >= 0.0 && sb <= 1.0)) {
++        RCLCPP_FATAL(getLogger(), "Parameter 'speed_bar' out of range [0, 1]: %s", sb_it->second.c_str());
++        return CallbackReturn::ERROR;
++      }
++      robot_->set_speed_bar(sb);
++      RCLCPP_INFO(getLogger(), "speed_bar = %.2f", sb);
++    }
++  }
++
++  {
++    auto mv_it = info_.hardware_parameters.find("max_joint_velocity");
++    if (mv_it != info_.hardware_parameters.end()) {
++      max_joint_velocity_ = atof(mv_it->second.c_str());
++      if (!(max_joint_velocity_ >= 0.0)) {
++        RCLCPP_FATAL(getLogger(), "Parameter 'max_joint_velocity' must be >= 0: %s", mv_it->second.c_str());
++        return CallbackReturn::ERROR;
++      }
++      RCLCPP_INFO(getLogger(), "max_joint_velocity = %.3f rad/s (0 = off)", max_joint_velocity_);
++    }
+   }
+ 
+   robot_node_ = std::make_shared<RobotNode>(rclcpp::NodeOptions(), robot_);
+@@ -329,8 +354,35 @@
+     hw_cartesian_pose_commands_[5] = data.sdata.tcp_pos[5] * DEG2RAD;
+   }
+ 
++  if (!joint_position_interface_state_.running) {
++    last_sent_valid_ = false;
++  }
+   if (isValidCommand(hw_position_commands_) && joint_position_interface_state_.running) {
+-    robot_->write_once_joint_positions(hw_position_commands_, period.seconds());
++    if (max_joint_velocity_ > 0.0) {
++      // [rda patch] 직전 송신값 기준으로 한 주기 이동량을 자른다(JTC 명령 자체는 건드리지 않는다).
++      if (!last_sent_valid_) {
++        last_sent_positions_ = hw_position_states_;
++        last_sent_valid_ = true;
++      }
++      const double step = max_joint_velocity_ * period.seconds();
++      std::array<double, kNumberOfJoints> out;
++      bool clamped = false;
++      for (size_t i = 0; i < kNumberOfJoints; i++) {
++        const double d = hw_position_commands_[i] - last_sent_positions_[i];
++        const double dc = std::max(-step, std::min(step, d));
++        clamped |= (dc != d);
++        out[i] = last_sent_positions_[i] + dc;
++      }
++      if (clamped && !clamp_warned_) {
++        clamp_warned_ = true;
++        RCLCPP_WARN(getLogger(), "joint velocity clamped to %.3f rad/s (further clamps not logged)",
++                    max_joint_velocity_);
++      }
++      last_sent_positions_ = out;
++      robot_->write_once_joint_positions(out, period.seconds());
++    } else {
++      robot_->write_once_joint_positions(hw_position_commands_, period.seconds());
++    }
+   }
+   if (isValidCommand(hw_velocity_commands_) && joint_velocity_interface_state_.running) {
+     robot_->write_once_joint_velocities(hw_velocity_commands_, period.seconds());

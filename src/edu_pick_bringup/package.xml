@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>edu_pick_bringup</name>
+  <version>1.0.0</version>
+  <description>Pick and place 실습 — 전체 실행(launch) + RG2 그리퍼 어댑터</description>
+  <maintainer email="101551311+karevaros@users.noreply.github.com">edu_pick</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>edu_pick_description</exec_depend>
+  <exec_depend>edu_pick_moveit</exec_depend>
+  <exec_depend>edu_pick_perception</exec_depend>
+  <exec_depend>rbpodo_hardware</exec_depend>
+  <exec_depend>rbpodo_msgs</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -1,0 +1,30 @@
+# ros2_control 컨트롤러 설정 (가짜 하드웨어·실기 공통)
+#
+# ⚠ state_interfaces 에 velocity 를 넣지 말 것 — 레인보우 하드웨어는 position·effort 만 준다.
+#   넣으면 arm_controller 가 활성화되지 않는다.
+# ⚠ 그리퍼(RG2)는 여기 없다 — 제어박스 명령으로 움직이므로 gripper_adapter 노드가 맡는다.
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+arm_controller:
+  ros__parameters:
+    joints: [base, shoulder, elbow, wrist1, wrist2, wrist3]
+    command_interfaces: [position]
+    state_interfaces: [position]
+    allow_partial_joints_goal: false
+    # 허용오차가 없으면 팔이 목표에 못 가도 시간만 지나면 '성공'으로 끝난다(실기에서 확인된 함정).
+    #   goal: 끝났을 때 관절 오차[rad] · trajectory: 이동 중 추종 오차 — 넘으면 즉시 중단
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 1.0
+      base:     {trajectory: 0.1, goal: 0.01}
+      shoulder: {trajectory: 0.1, goal: 0.01}
+      elbow:    {trajectory: 0.1, goal: 0.01}
+      wrist1:   {trajectory: 0.1, goal: 0.01}
+      wrist2:   {trajectory: 0.1, goal: 0.01}
+      wrist3:   {trajectory: 0.1, goal: 0.01}
