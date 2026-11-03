@@ -3,8 +3,10 @@
   실습용 로봇 모델: 테이블 + RB5-850e + OnRobot RG2 + 손목 RealSense D405
 
   프레임 구조 (TF 트리)
-    world ─┬─ table                         (테이블, 충돌 검사용)
-           └─ link0 ─ … ─ link6 ─ tcp       (RB5 팔 · 레인보우 공식 모델)
+    world ─┬─ table                         (테이블, 충돌 검사용 · 윗면 높이 = table.top_z)
+           ├─ robot_stand                   (로봇 받침)
+           └─ link0 ─ … ─ link6 ─ tcp       (RB5 팔 · 레인보우 공식 모델 · tcp = 툴 플랜지 면)
+                                   ├─ rg2_adapter                (플랜지-그리퍼 어댑터)
                                    └─ rg2_hand ─┬─ rg2_leftfinger / rg2_rightfinger
                                                 ├─ tool_tip   ★ 집기 기준점(손끝). z축 = 접근 방향, x축 = 닫히는 방향
                                                 └─ d405_link  (카메라. 내부 광학 프레임은 카메라 드라이버가 발행)
@@ -57,12 +59,48 @@
   <joint name="world_to_link0" type="fixed">
     <parent link="world"/>
     <child link="link0"/>
-    <origin xyz="0 0 ${tb['top_z']}"/>
+    <origin xyz="0 0 0"/>   <!-- world = 로봇 베이스 바닥면. 테이블은 table.top_z 만큼 아래/위 -->
   </joint>
 
-  <!-- ③ RG2 그리퍼 — tcp 에 장착(접근 방향 = rg2_hand +x) -->
+  <!-- ②-1 로봇 받침: 테이블 윗면(top_z) ~ 로봇 바닥(0). top_z 가 0 이면 두께 1 mm 로 둔다 -->
+  <xacro:property name="stand_h" value="${max(-tb['top_z'], 0.001)}"/>
+  <link name="robot_stand">
+    <visual>
+      <origin xyz="0 0 ${-stand_h/2}"/>
+      <geometry><box size="${scene['robot_stand']['size_xy'][0]} ${scene['robot_stand']['size_xy'][1]} ${stand_h}"/></geometry>
+      <material name="stand_gray"><color rgba="0.55 0.55 0.6 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${-stand_h/2}"/>
+      <geometry><box size="${scene['robot_stand']['size_xy'][0]} ${scene['robot_stand']['size_xy'][1]} ${stand_h}"/></geometry>
+    </collision>
+  </link>
+  <joint name="robot_stand_joint" type="fixed">
+    <parent link="world"/>
+    <child link="robot_stand"/>
+    <origin xyz="0 0 0"/>
+  </joint>
+
+  <!-- ③ RG2 그리퍼 — tcp(툴 플랜지 면)에 어댑터를 끼워 장착. 접근 방향 = rg2_hand +x = tcp -y -->
+  <xacro:property name="adapter" value="${scene['gripper_adapter_length']}"/>
+  <link name="rg2_adapter">
+    <visual>
+      <origin xyz="0 ${-adapter/2} 0" rpy="${pi/2} 0 0"/>
+      <geometry><cylinder radius="0.032" length="${max(adapter, 0.001)}"/></geometry>
+      <material name="adapter_gray"><color rgba="0.4 0.4 0.4 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 ${-adapter/2} 0" rpy="${pi/2} 0 0"/>
+      <geometry><cylinder radius="0.032" length="${max(adapter, 0.001)}"/></geometry>
+    </collision>
+  </link>
+  <joint name="rg2_adapter_joint" type="fixed">
+    <parent link="tcp"/>
+    <child link="rg2_adapter"/>
+    <origin xyz="0 0 0"/>
+  </joint>
   <xacro:onrobot_rg2 parent="tcp">
-    <origin xyz="0 0 0" rpy="0 0 ${-pi/2}"/>
+    <origin xyz="0 ${-adapter} 0" rpy="0 0 ${-pi/2}"/>
   </xacro:onrobot_rg2>
 
   <!-- ④ 집기 기준점: 손끝. MoveIt 은 이 프레임을 목표로 계획한다 -->

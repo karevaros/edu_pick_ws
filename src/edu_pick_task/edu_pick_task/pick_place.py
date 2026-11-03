@@ -47,7 +47,9 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose, Quaternion
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
 from moveit_msgs.msg import Constraints, JointConstraint, MoveItErrorCodes, RobotState, RobotTrajectory
-from moveit_msgs.srv import GetCartesianPath, GetPositionIK
+from moveit_msgs.msg import AttachedCollisionObject, CollisionObject, PlanningScene
+from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath, GetPositionIK
+from shape_msgs.msg import SolidPrimitive
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -89,6 +91,9 @@ class PickPlace(Node):
         TransformListener(self.tf, self)
 
         self.ik = self.create_client(GetPositionIK, "/compute_ik")
+        self.apply_scene = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
+        self.obstacle_ids = set()     # MoveIt 장면에 넣어 둔 물체 이름
+        self.placed = []              # 이미 옮겨 놓은 물체 (장애물로 계속 둔다)
         self.cart = self.create_client(GetCartesianPath, "/compute_cartesian_path")
         self.move = ActionClient(self, MoveGroup, "/move_action")
         self.exe = ActionClient(self, ExecuteTrajectory, "/execute_trajectory")
@@ -298,6 +303,93 @@ class PickPlace(Node):
         if res.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
             raise StepFailed(f"{what}: 그리퍼 실패 (오류 코드 {res.error_code})")
 
+    # ================================================================ MoveIt 장면 (장애물)
+    # MoveIt 은 URDF 에 있는 것(테이블·받침대·로봇 자신)만 안다. 카메라로 본 물체·이미 놓은 물체는
+    # 직접 '장면(planning scene)'에 넣어 줘야 피해 간다. 쥔 물체는 그리퍼에 '붙여서' 함께 움직인다.
+    PAD = 0.01   # 장애물 여유 [m]
+
+    @staticmethod
+    def _primitive(shape, width, length, height, pad):
+        sp = SolidPrimitive()
+        if shape == "round":
+            sp.type, sp.dimensions = SolidPrimitive.CYLINDER, [height + pad, width / 2 + pad]
+        else:
+            sp.type, sp.dimensions = SolidPrimitive.BOX, [width + 2 * pad, length + 2 * pad, height + pad]
+        return sp
+
+    def _apply(self, ps, what):
+        if not self.apply_scene.wait_for_service(timeout_sec=5.0):
+            raise StepFailed("/apply_planning_scene 서비스 없음")
+        res = self.wait(self.apply_scene.call_async(ApplyPlanningScene.Request(scene=ps)), 10.0, what)
+        if not res.success:
+            raise StepFailed(f"{what}: MoveIt 장면 반영 실패")
+
+    def set_obstacles(self, items):
+        """장애물 목록으로 장면을 바꾼다. items: dict(id, shape, x, y, bottom, width, length, height, yaw)"""
+        ps = PlanningScene(is_diff=True)
+        ps.robot_state.is_diff = True
+        for oid in self.obstacle_ids:
+            ps.world.collision_objects.append(CollisionObject(id=oid, operation=CollisionObject.REMOVE))
+        for it in items:
+            co = CollisionObject(id=it["id"], operation=CollisionObject.ADD)
+            co.header.frame_id = WORLD
+            co.primitives = [self._primitive(it["shape"], it["width"], it["length"], it["height"], self.PAD)]
+            p = Pose()
+            p.position.x, p.position.y = float(it["x"]), float(it["y"])
+            p.position.z = float(it["bottom"]) + (it["height"] + self.PAD) / 2
+            yaw = 0.0 if it["shape"] == "round" or math.isnan(it["yaw"]) else it["yaw"]
+            p.orientation.z, p.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+            co.primitive_poses = [p]
+            ps.world.collision_objects.append(co)
+        self._apply(ps, "장애물 갱신")
+        self.obstacle_ids = {it["id"] for it in items}
+
+    @staticmethod
+    def as_item(o, oid=None):
+        return {"id": oid or f"obstacle_{o.id}", "shape": o.shape, "x": o.top_center.x, "y": o.top_center.y,
+                "bottom": o.top_center.z - o.height, "width": o.width, "length": o.length,
+                "height": o.height, "yaw": o.yaw}
+
+    def attach_held(self, obj, depth):
+        """쥔 물체를 손끝(tool_tip)에 붙인다. depth = 손끝이 물체 윗면보다 내려간 깊이.
+        tool_tip z축 = 접근(아래) 방향 → 물체 윗면은 z = -depth, 중심은 z = -depth + 높이/2"""
+        a = AttachedCollisionObject(link_name=TIP,
+                                    touch_links=["rg2_leftfinger", "rg2_rightfinger", "rg2_hand", TIP])
+        a.object.id, a.object.operation = "held_object", CollisionObject.ADD
+        a.object.header.frame_id = TIP
+        a.object.primitives = [self._primitive(obj.shape, obj.width, obj.length, obj.height, 0.003)]
+        p = Pose()
+        p.position.z = -depth + obj.height / 2
+        p.orientation.w = 1.0
+        a.object.primitive_poses = [p]
+        ps = PlanningScene(is_diff=True)
+        ps.robot_state.is_diff = True
+        ps.robot_state.attached_collision_objects = [a]
+        self._apply(ps, "쥔 물체 붙이기")
+
+    def detach_held(self, strict=True):
+        """쥔 물체를 뗀다. strict=False: 붙은 게 없어도 괜찮다(시작할 때 정리용 —
+        없는 물체를 지우라고 하면 MoveIt 은 '실패'를 돌려준다)."""
+        a = AttachedCollisionObject(link_name=TIP)
+        a.object.id, a.object.operation = "held_object", CollisionObject.REMOVE
+        ps = PlanningScene(is_diff=True)
+        ps.robot_state.is_diff = True
+        ps.robot_state.attached_collision_objects = [a]
+        try:
+            self._apply(ps, "쥔 물체 떼기")
+        except StepFailed:
+            if strict:
+                raise
+            return
+        # MoveIt 은 떼어 낸 물체를 그 자리에 '세상 물체'로 남긴다 → 지운다(놓은 물체는 placed 로 따로 관리)
+        ps = PlanningScene(is_diff=True)
+        ps.robot_state.is_diff = True
+        ps.world.collision_objects = [CollisionObject(id="held_object", operation=CollisionObject.REMOVE)]
+        try:
+            self._apply(ps, "떼어 낸 물체 정리")
+        except StepFailed:
+            pass
+
     # ================================================================ 인식
     def detect(self, timeout=5.0):
         """대기위치에 멈춘 뒤 들어온 인식 결과만 쓴다(이동 중에 찍힌 결과는 버림)."""
@@ -360,6 +452,8 @@ class PickPlace(Node):
             if not c.wait_for_service(timeout_sec=20.0):
                 raise StepFailed(f"{n} 서비스 없음 — move_group 이 떠 있나요?")
 
+        self.detach_held(strict=False)     # 앞 실행이 남긴 장면 정리
+        self.set_obstacles([])
         self.step(1, "초기위치로 이동")
         self.move_joints(poses["home"], "초기위치")
 
@@ -369,7 +463,12 @@ class PickPlace(Node):
             self.move_joints(poses["observe"], "대기위치")
 
             self.step(3, "물체인식")
-            obj = self.choose(self.detect(), slots)
+            seen = self.detect()
+            obj = self.choose(seen, slots)
+            # 고른 물체 말고는 전부 장애물로: 인식한 다른 물체 + 이미 옮겨 놓은 물체
+            others = [self.as_item(o) for o in seen if obj is None or o.id != obj.id]
+            self.set_obstacles(others + self.placed)
+            self.say(f"   → MoveIt 장면 장애물 {len(others) + len(self.placed)}개 (인식 {len(others)} · 옮겨 놓은 것 {len(self.placed)})")
             if obj is None:
                 self.say("   → 집을 수 있는 물체가 없습니다. 종료합니다.")
                 break
@@ -394,6 +493,7 @@ class PickPlace(Node):
 
             self.step(6, "잡기")
             self.gripper(GRIPPER_CLOSED, "잡기")
+            self.attach_held(obj, obj.top_center.z - grip_z)
 
             self.step(7, "상승")
             self.move_linear(above_z - grip_z, "상승")
@@ -411,9 +511,15 @@ class PickPlace(Node):
 
             self.step(10, "놓기")
             self.gripper(GRIPPER_OPEN, "놓기")
+            self.detach_held()
 
             self.step(11, "상승")
             self.move_linear(place_above - release_z, "상승")
+            # 놓은 물체는 손이 빠져나온 '뒤에' 장애물로 등록한다(손가락이 둘러싼 채로 넣으면 시작부터 충돌)
+            it = self.as_item(obj, oid=f"placed_{k}")
+            it.update(x=place_xy[0], y=place_xy[1], bottom=self.table_z)
+            self.placed.append(it)
+            self.set_obstacles(list(self.placed))
 
             self.step("11+", "결과 확인 (대기위치에서 다시 인식)")
             self.move_joints(poses["observe"], "대기위치")
@@ -427,6 +533,7 @@ class PickPlace(Node):
 
         self.step(12, "초기위치로 이동")
         self.move_joints(poses["home"], "초기위치")
+        self.set_obstacles([])
         self.say(f"\n완료 — {done}개 옮김")
 
 

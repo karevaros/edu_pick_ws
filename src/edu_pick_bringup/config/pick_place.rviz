@@ -58,6 +58,19 @@ Visualization Manager:
       Topic:
         Value: /edu_pick/debug_image
       Value: true
+    - Class: moveit_rviz_plugin/PlanningScene
+      Name: MoveIt 장면(장애물·쥔 물체)
+      Enabled: true
+      Robot Description: robot_description
+      Planning Scene Topic: /monitored_planning_scene
+      Scene Geometry:
+        Scene Alpha: 0.5
+        Scene Color: 230; 200; 60
+      Scene Robot:
+        Show Robot Visual: false
+        Show Robot Collision: false
+        Attached Body Color: 230; 120; 40
+      Value: true
     - Class: moveit_rviz_plugin/Trajectory
       Name: 계획된 경로
       Enabled: true

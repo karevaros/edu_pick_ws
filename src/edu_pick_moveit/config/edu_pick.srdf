@@ -12,29 +12,39 @@
     <disable_collisions link1="d405_link" link2="link4" reason="Never"/>
     <disable_collisions link1="d405_link" link2="link5" reason="Never"/>
     <disable_collisions link1="d405_link" link2="link6" reason="Never"/>
+    <disable_collisions link1="d405_link" link2="rg2_adapter" reason="Never"/>
     <disable_collisions link1="d405_link" link2="rg2_hand" reason="Adjacent"/>
     <disable_collisions link1="d405_link" link2="rg2_leftfinger" reason="Never"/>
     <disable_collisions link1="d405_link" link2="rg2_rightfinger" reason="Never"/>
     <disable_collisions link1="link0" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="link0" link2="link2" reason="Never"/>
-    <disable_collisions link1="link0" link2="table" reason="Always"/>
+    <disable_collisions link1="link0" link2="robot_stand" reason="Always"/>
+    <disable_collisions link1="link0" link2="table" reason="Never"/>
     <disable_collisions link1="link1" link2="link2" reason="Adjacent"/>
+    <disable_collisions link1="link1" link2="robot_stand" reason="Never"/>
     <disable_collisions link1="link1" link2="table" reason="Never"/>
     <disable_collisions link1="link2" link2="link3" reason="Adjacent"/>
     <disable_collisions link1="link3" link2="link4" reason="Adjacent"/>
     <disable_collisions link1="link4" link2="link5" reason="Adjacent"/>
     <disable_collisions link1="link4" link2="link6" reason="Never"/>
+    <disable_collisions link1="link4" link2="rg2_adapter" reason="Never"/>
     <disable_collisions link1="link4" link2="rg2_hand" reason="Never"/>
     <disable_collisions link1="link4" link2="rg2_leftfinger" reason="Never"/>
     <disable_collisions link1="link4" link2="rg2_rightfinger" reason="Never"/>
     <disable_collisions link1="link5" link2="link6" reason="Adjacent"/>
+    <disable_collisions link1="link5" link2="rg2_adapter" reason="Never"/>
     <disable_collisions link1="link5" link2="rg2_hand" reason="Never"/>
     <disable_collisions link1="link5" link2="rg2_leftfinger" reason="Never"/>
     <disable_collisions link1="link5" link2="rg2_rightfinger" reason="Never"/>
+    <disable_collisions link1="link6" link2="rg2_adapter" reason="Never"/>
     <disable_collisions link1="link6" link2="rg2_hand" reason="Never"/>
     <disable_collisions link1="link6" link2="rg2_leftfinger" reason="Never"/>
     <disable_collisions link1="link6" link2="rg2_rightfinger" reason="Never"/>
+    <disable_collisions link1="rg2_adapter" link2="rg2_hand" reason="Always"/>
+    <disable_collisions link1="rg2_adapter" link2="rg2_leftfinger" reason="Never"/>
+    <disable_collisions link1="rg2_adapter" link2="rg2_rightfinger" reason="Never"/>
     <disable_collisions link1="rg2_hand" link2="rg2_leftfinger" reason="Adjacent"/>
     <disable_collisions link1="rg2_hand" link2="rg2_rightfinger" reason="Adjacent"/>
     <disable_collisions link1="rg2_leftfinger" link2="rg2_rightfinger" reason="Never"/>
+    <disable_collisions link1="robot_stand" link2="table" reason="Always"/>
 </robot>
