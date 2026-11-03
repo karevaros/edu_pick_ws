@@ -131,7 +131,10 @@ def _setup(context):
             os.path.join(get_package_share_directory("edu_pick_moveit"), "launch", "move_group.launch.py"))),
         Node(package="edu_pick_perception", executable="object_detector", output="screen"),
     ]
-    if real:
+    use_cam = a("camera").lower() in ("true", "1")
+    if real and not use_cam:
+        print("[pick_place] 카메라 끔(camera:=false) — 인식 결과가 나오지 않습니다")
+    if real and use_cam:
         try:
             get_package_share_directory("realsense2_camera")
         except Exception:
@@ -143,7 +146,7 @@ def _setup(context):
         nodes.append(IncludeLaunchDescription(PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory("realsense2_camera"), "launch", "rs_launch.py")),
             launch_arguments=rs.items()))
-    else:
+    elif not real:
         nodes.append(Node(package="edu_pick_perception", executable="fake_camera", output="screen"))
     if a("rviz").lower() in ("true", "1"):
         srdf = open(os.path.join(get_package_share_directory("edu_pick_moveit"), "config", "edu_pick.srdf")).read()
@@ -165,6 +168,7 @@ def generate_launch_description():
                               description="관절 속도 상한[rad/s] — 이보다 빠른 명령은 하드웨어에서 잘린다"),
         DeclareLaunchArgument("gripper_dry_run", default_value="auto",
                               description="auto = 실제 구동(cb_simulation:=false)일 때만 그리퍼 명령을 보냄 / true / false"),
+        DeclareLaunchArgument("camera", default_value="true", description="mode:=real 에서 D405 드라이버 실행 여부"),
         DeclareLaunchArgument("camera_serial", default_value="", description="카메라가 여러 대일 때 시리얼"),
         DeclareLaunchArgument("rviz", default_value="true"),
         OpaqueFunction(function=_setup),

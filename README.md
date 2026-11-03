@@ -168,7 +168,16 @@ ros2 run edu_pick_task pick_place --step
 - [ ] `place.xy` — 실제로 비어 있는 자리, 물체를 여러 개 옮기면 `step_xy` 만큼 옆으로 놓는다
 - [ ] 물체: 그리퍼 폭(≈ 9.5 cm 이하) · 무광택(반짝이는 캔·투명 병은 깊이가 잘 안 잡힌다 → 무광 테이프를 붙이면 된다) · 테이블과 높이 차 2 cm 이상
 
+**자세 도구 `go_pose`** — 첫 구동 확인·자세 맞추기용 (계획을 보여 주고 Enter 후 실행)
+```bash
+ros2 run edu_pick_task go_pose --show            # 지금 관절값(도)
+ros2 run edu_pick_task go_pose --jog wrist3 5    # 관절 하나를 +5° (±30° 이내)
+ros2 run edu_pick_task go_pose home              # scene.yaml 의 home / observe 자세로
+```
+카메라 없이 팔만 확인할 때는 launch 에 `camera:=false`.
+
 **첫 실행 순서 (수업 전 강사가 반드시 한 번)**
+0. `mode:=real camera:=false` (Simulation) → `go_pose --jog wrist3 5` → `go_pose home` → `go_pose observe` 로 펜던트 가상 로봇의 경로 확인 → Real 에서 `--jog` 부터
 1. `mode:=real` (Simulation) → `pick_place --step` 으로 12단계 전체. 인식 위치와 실제 물체 위치 차이를 확인한다(1 cm 이내면 양호).
 2. `cb_simulation:=false` → `--step` 으로 **물체 없이** 한 번 → 물체 놓고 한 번
 3. 잡는 높이가 안 맞으면 `motion.grip_depth`, 손끝 위치가 체계적으로 어긋나면 `tool_tip_offset`·`camera_mount` 를 확인한다.

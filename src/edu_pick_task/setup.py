@@ -15,5 +15,6 @@ setup(
     maintainer_email="101551311+karevaros@users.noreply.github.com",
     description="Pick and place 실습 — 12단계 시나리오 노드",
     license="Apache-2.0",
-    entry_points={"console_scripts": ["pick_place = edu_pick_task.pick_place:main"]},
+    entry_points={"console_scripts": ["pick_place = edu_pick_task.pick_place:main",
+                                     "go_pose = edu_pick_task.go_pose:main"]},
 )

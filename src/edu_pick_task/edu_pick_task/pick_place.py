@@ -184,8 +184,8 @@ class PickPlace(Node):
         r.start_state.is_diff = True
         c = Constraints()
         for n, v in zip(ARM_JOINTS, target):
-            c.joint_constraints.append(JointConstraint(joint_name=n, position=float(v), tolerance_above=1e-3,
-                                                       tolerance_below=1e-3, weight=1.0))
+            c.joint_constraints.append(JointConstraint(joint_name=n, position=float(v), tolerance_above=1e-4,
+                                                       tolerance_below=1e-4, weight=1.0))
         r.goal_constraints = [c]
         goal.planning_options.plan_only = True          # ① 계획만 → ② 확인 → ③ 실행 (execute)
         res = self.run_action(self.move, goal, 60.0, what)
