@@ -278,7 +278,12 @@ class ObjectDetector(Node):
         if area_all < c["min_area"]:                # 위에서 본 면적 [m²]이 너무 작으면 잡음
             return None
 
-        top_pts = pts[h > top - 0.015]
+        # 윗면 띠: 보통 1.5 cm. 키 큰 물체(세운 병)는 띠에 뚜껑 옆면이 섞여 중심이 카메라 쪽으로 끌린다
+        #   → 0.8 cm 로 좁힌다 (실기 16회차: 뚜껑 옆으로 빗나감)
+        band = 0.015
+        if top >= 2.5 * max(outer, 1e-3):
+            band = 0.008
+        top_pts = pts[h > top - band]
         if len(top_pts) < 20:
             return None
         (cx, cy), width, length, short_dir, area = self.robust_box(top_pts[:, :2])
