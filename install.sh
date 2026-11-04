@@ -24,6 +24,10 @@ WS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RBPODO_SDK_TAG="v0.16.14"
 RBPODO_ROS2_COMMIT="5e8294a985e7ce5e20e70564c2681130afc5f502"
 
+# apt 가 설치 중에 질문(키보드 배치·시간대 등)을 띄우면 스크립트가 멈춘다 → 묻지 않고 기본값으로
+#   (sudo 는 환경변수를 지우므로 명령마다 붙인다)
+APT="sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+
 step() { echo; echo "━━━ $* ━━━"; }
 die()  { echo "❌ $*" >&2; exit 1; }
 
@@ -35,14 +39,24 @@ case "$WS" in *" "*) die "설치 폴더 경로에 빈칸이 있습니다: $WS �
 # ── [0] ROS 2 Humble ─────────────────────────────────────────────────────────
 # 공식 설치 절차(docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)를 그대로 따른다.
 step "[0/4] ROS 2 Humble"
+# 앞 설치가 중간에 끊겨 반쯤 설치된 패키지가 있으면 마저 끝낸다
+#   (dpkg --audit 는 root 가 아니면 잠금 파일을 못 읽어 '이상 없음'처럼 빈 결과를 낸다 → 쓰지 않는다)
+half_installed() {
+  [ -n "$(ls -A /var/lib/dpkg/updates 2>/dev/null)" ] ||
+  dpkg-query -W -f='${db:Status-Abbrev}\n' 2>/dev/null | grep -qE '^.[UFHW]'
+}
+if [ "${SKIP_APT:-0}" != "1" ] && half_installed; then
+  echo "  중간에 끊긴 설치를 마저 끝냅니다"
+  sudo DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+fi
 if [ -f /opt/ros/humble/setup.bash ]; then
   echo "  이미 설치됨 — 건너뜀"
 elif [ "${SKIP_APT:-0}" = "1" ]; then
   die "ROS 2 Humble 이 없는데 SKIP_APT=1 입니다."
 else
   echo "  ROS 2 Humble 을 설치합니다(약 3 GB · 인터넷 속도에 따라 10~30분)."
-  sudo apt-get update
-  sudo apt-get install -y locales software-properties-common curl
+  $APT update
+  $APT install locales software-properties-common curl
   sudo locale-gen en_US en_US.UTF-8
   sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
   sudo add-apt-repository -y universe
@@ -52,21 +66,22 @@ else
   curl -fsSL -o /tmp/ros2-apt-source.deb \
     "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.jammy_all.deb"
   sudo dpkg -i /tmp/ros2-apt-source.deb
-  sudo apt-get update
-  sudo apt-get upgrade -y
-  sudo apt-get install -y ros-humble-desktop
+  $APT update
+  $APT upgrade
+  $APT install ros-humble-desktop
   [ -f /opt/ros/humble/setup.bash ] || die "ROS 2 Humble 설치에 실패했습니다 — 위 메시지를 확인하세요."
 fi
 
 # ── [1] apt ──────────────────────────────────────────────────────────────────
 APT_PKGS=(
-  ros-humble-moveit
+  ros-humble-desktop ros-humble-moveit
   ros-humble-ros2-control ros-humble-ros2-controllers
   ros-humble-xacro ros-humble-joint-state-publisher ros-humble-joint-state-publisher-gui
   ros-humble-cv-bridge ros-humble-tf2-ros ros-humble-tf2-geometry-msgs
   ros-humble-realsense2-camera ros-humble-rqt-image-view
   python3-opencv python3-numpy python3-yaml python3-colcon-common-extensions
   git cmake build-essential
+  fonts-noto-cjk            # RViz 의 한글 표시 이름 (데스크톱에는 보통 이미 있다)
 )
 step "[1/4] apt 패키지 + RealSense USB 권한"
 if [ "${SKIP_APT:-0}" = "1" ]; then
@@ -78,8 +93,8 @@ else
     echo "  전부 설치돼 있음"
   else
     echo "  설치할 패키지: ${MISSING[*]}"
-    sudo apt-get update
-    sudo apt-get install -y "${MISSING[@]}"
+    $APT update
+    $APT install "${MISSING[@]}"
   fi
   # RealSense 카메라를 sudo 없이 쓰기 위한 USB 권한 규칙 (없으면 실습실에서 카메라가 안 잡힌다)
   if [ ! -f /etc/udev/rules.d/99-realsense-libusb.rules ]; then
