@@ -128,7 +128,10 @@ class FakeCamera(Node):
             dx, dy = p[0] - o["x"], p[1] - o["y"]
             top = o["z0"] + o["h"]
             half = o.get("r", None) or min(o["sx"], o["sy"]) / 2
-            if math.hypot(dx, dy) > max(0.02, half * 0.6) or not (o["z0"] - 0.01 < p[2] < top - 0.005):
+            # RG2 는 닫을수록 손끝이 앞(아래)으로 나온다 — 실측 20.5 cm(10 cm 벌림) → 24 cm(닫힘), 직선 근사
+            advance = 0.035 * (1.0 - min(2 * half / 0.10, 1.0))
+            tip_closed = p[2] - advance
+            if math.hypot(dx, dy) > max(0.02, half * 0.6) or not (o["z0"] - 0.01 < tip_closed < top - 0.005):
                 continue
             if o["shape"] == "box":
                 short = o["yaw"] if o["sx"] <= o["sy"] else o["yaw"] + math.pi / 2
