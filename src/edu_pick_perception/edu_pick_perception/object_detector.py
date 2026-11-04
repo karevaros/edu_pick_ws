@@ -75,6 +75,7 @@ class ObjectDetector(Node):
         TransformListener(self.tf, self)
         self.bridge = CvBridge()
         self._last = None
+        self._pending, self._retries = None, 0
         self.create_subscription(PointCloud2, self.get_parameter("cloud_topic").value,
                                  lambda m: setattr(self, "_last", m), 2)
         self.pub = self.create_publisher(DetectedObjectArray, "/edu_pick/objects", 10)
@@ -90,7 +91,11 @@ class ObjectDetector(Node):
 
     # ------------------------------------------------------------------ 처리
     def process(self):
-        msg, self._last = self._last, None
+        # TF 가 아직 안 온 프레임은 버리지 않고 다음 주기에 다시 처리한다 (아래 ① 참고)
+        if self._pending is not None:
+            msg, self._pending = self._pending, None
+        else:
+            msg, self._last = self._last, None
         if msg is None:
             return
         tm = {}                                     # 단계별 처리 시간 [ms]
@@ -107,11 +112,18 @@ class ObjectDetector(Node):
             return
         # ① 카메라 → world 변환. **점군을 찍은 시각**의 TF 를 쓴다
         #    (가장 최근 TF 를 쓰면 팔이 움직이는 중에 찍힌 점군이 엉뚱한 곳에 놓인다)
+        #    🔴 카메라 시각이 관절 TF 보다 수십 ms 앞서면 '미래 시각'이라 아직 계산할 수 없다.
+        #       그런 프레임을 버리면 계속 결과가 안 나올 수 있다(실기 11회차) → 보관했다가 다음 주기에 다시
         try:
             t = self.tf.lookup_transform(self.world, msg.header.frame_id, Time.from_msg(msg.header.stamp))
         except Exception as e:
+            if "future" in str(e) and self._retries < 5:
+                self._pending, self._retries = msg, self._retries + 1
+                return
+            self._retries = 0
             self.get_logger().warn(f"TF 없음 {self.world}←{msg.header.frame_id}: {e}", throttle_duration_sec=5.0)
             return
+        self._retries = 0
         self._count_between_fingers(msg)
         lap("TF·손가락확인")
         R = quat_to_mat(t.transform.rotation)
