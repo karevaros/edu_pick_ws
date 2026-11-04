@@ -56,6 +56,7 @@ from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from edu_pick_msgs.msg import DetectedObjectArray
+from std_msgs.msg import Int32
 
 ARM_JOINTS = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
 GROUP, TIP, WORLD = "arm", "tool_tip", "world"
@@ -93,6 +94,8 @@ class PickPlace(Node):
         self.objects, self.objects_time = None, 0.0
         self.create_subscription(JointState, "/joint_states", self._on_js, 10)
         self.create_subscription(DetectedObjectArray, "/edu_pick/objects", self._on_objects, 10)
+        self.between, self.between_time = None, 0.0
+        self.create_subscription(Int32, "/edu_pick/between_fingers", self._on_between, 10)
         self.tf = Buffer()
         TransformListener(self.tf, self)
 
@@ -116,6 +119,18 @@ class PickPlace(Node):
     def _on_js(self, msg):
         for n, p in zip(msg.name, msg.position):
             self.joints[n] = p
+
+    def _on_between(self, msg):
+        self.between, self.between_time = msg.data, time.time()
+
+    def held_points(self, timeout=3.0):
+        """그리퍼를 연 뒤 손가락 사이에 보이는 점 개수(멈춘 뒤 들어온 값). 카메라가 없으면 None."""
+        t_req = time.time() + 0.5
+        while time.time() < t_req + timeout:
+            if self.between is not None and self.between_time > t_req:
+                return self.between
+            time.sleep(0.05)
+        return None
 
     def _on_objects(self, msg):
         self.objects, self.objects_time = msg, time.time()
@@ -552,8 +567,21 @@ class PickPlace(Node):
             self.gripper(self.grip_open, "놓기")
             self.detach_held()
 
-            self.step(11, "상승")
-            self.move_linear(place_above - release_z, "상승")
+            # 놓기 확인: 3 cm 들고(손 안 깊이 최대 2.5 cm 보다 높게) 손가락 사이를 본다. RG2 는 열렸는지 알려 주지 않는다
+            #   (실기: 열기 명령이 접수됐는데 안 열려 병을 쥔 채 돌아온 적이 있다 → 다시 열기)
+            self.step(11, "상승 (3 cm 들고 놓였는지 확인)")
+            self.move_linear(0.03, "상승")
+            thr = int(self.scene["gripper"].get("held_points", 400))
+            for retry in range(3):
+                n = self.held_points()
+                if n is None or n < thr:
+                    self.say(f"   ✓ 손가락 사이 비어 있음(점 {n}개)" if n is not None else "   (카메라 값 없음 — 확인 생략)")
+                    break
+                if retry == 2:
+                    raise StepFailed(f"놓기 실패 — 그리퍼를 다시 열어도 물체가 손에 남아 있습니다(점 {n}개). 사람이 확인하세요")
+                self.say(f"   ✕ 물체가 아직 손에 있음(점 {n}개) — 열기 다시 {retry + 1}/2")
+                self.gripper(self.grip_open, "다시 열기")
+            self.move_linear(place_above - release_z - 0.03, "상승")
             # 놓은 물체는 손이 빠져나온 '뒤에' 장애물로 등록한다(손가락이 둘러싼 채로 넣으면 시작부터 충돌)
             it = self.as_item(obj, oid=f"placed_{first_slot + k}")
             it.update(x=place_xy[0], y=place_xy[1], bottom=self.table_z)

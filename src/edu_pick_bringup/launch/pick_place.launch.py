@@ -34,6 +34,7 @@ HW_PARAMS = {
     "servo_t2": (0.02, 0.2, "서보 유지시간[s] — 무선이면 0.1"),
     "speed_bar": (0.0, 1.0, "제어박스 속도바"),
     "max_joint_velocity": (0.0, 1.0, "관절 속도 상한[rad/s]"),
+    "script_grace": (0.0, 10.0, "그리퍼 명령 뒤 서보 끊김 허용[s]"),
 }
 OWN_NODES = ("robot_state_publisher", "controller_manager", "joint_state_publisher", "gripper_adapter",
              "move_group", "object_detector", "fake_camera", "d405")
@@ -133,7 +134,9 @@ def _setup(context):
         Node(package="controller_manager", executable="spawner", arguments=["arm_controller"]),
         Node(package="edu_pick_bringup", executable="gripper_adapter.py", name="gripper_adapter",
              namespace="gripper_controller", output="screen",
-             parameters=[{"dry_run": dry, "force_pct": int(_scene(desc)["gripper"].get("force_pct", 40))}]),
+             parameters=[{"dry_run": dry, "force_pct": int(_scene(desc)["gripper"].get("force_pct", 40)),
+                          "settle_sec": 2.5,
+                          "init_on_start": a("gripper_init").lower() in ("true", "1")}]),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory("edu_pick_moveit"), "launch", "move_group.launch.py"))),
         Node(package="edu_pick_perception", executable="object_detector", output="screen"),
@@ -175,6 +178,10 @@ def generate_launch_description():
                               description="관절 속도 상한[rad/s] — 이보다 빠른 명령은 하드웨어에서 잘린다"),
         DeclareLaunchArgument("gripper_dry_run", default_value="auto",
                               description="auto = 실제 구동(cb_simulation:=false)일 때만 그리퍼 명령을 보냄 / true / false"),
+        DeclareLaunchArgument("script_grace", default_value="3.0",
+                              description="그리퍼 명령 뒤 서보 끊김 허용[s] — 넓은 물체를 힘으로 쥘 때 1 s 로는 모자랐다(실기)"),
+        DeclareLaunchArgument("gripper_init", default_value="true",
+                              description="false = 시작할 때 그리퍼 초기화·열기를 하지 않음 (물체를 쥔 채 다시 접속할 때)"),
         DeclareLaunchArgument("camera", default_value="true", description="mode:=real 에서 D405 드라이버 실행 여부"),
         DeclareLaunchArgument("camera_serial", default_value="", description="카메라가 여러 대일 때 시리얼"),
         DeclareLaunchArgument("rviz", default_value="true"),

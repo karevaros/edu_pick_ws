@@ -32,6 +32,7 @@ from geometry_msgs.msg import Point
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import Image, PointCloud2
+from std_msgs.msg import Int32
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -77,6 +78,9 @@ class ObjectDetector(Node):
         self.pub = self.create_publisher(DetectedObjectArray, "/edu_pick/objects", 10)
         self.pub_mk = self.create_publisher(MarkerArray, "/edu_pick/objects_markers", 10)
         self.pub_img = self.create_publisher(Image, "/edu_pick/debug_image", 2)
+        # 손가락 사이에 보이는 점 개수 — 그리퍼를 연 상태에서 물체가 아직 손에 남아 있는지 확인용
+        self.pub_between = self.create_publisher(Int32, "/edu_pick/between_fingers", 2)
+        self.max_open = float(scene.get("gripper", {}).get("max_open", 0.10))
         self.create_timer(1.0 / float(self.get_parameter("rate").value), self.process)
         self.get_logger().info(f"물체 인식 시작 — 입력 {self.get_parameter('cloud_topic').value}")
 
@@ -96,6 +100,7 @@ class ObjectDetector(Node):
         except Exception as e:
             self.get_logger().warn(f"TF 없음 {self.world}←{msg.header.frame_id}: {e}", throttle_duration_sec=5.0)
             return
+        self._count_between_fingers(msg)
         R = quat_to_mat(t.transform.rotation)
         p = t.transform.translation
         xyz_cam, rgb = cloud_to_arrays(msg)
@@ -173,6 +178,24 @@ class ObjectDetector(Node):
 
         self._publish(objects, msg.header.stamp, rgb, mask, table_z)
 
+    def _count_between_fingers(self, msg):
+        """손끝(tool_tip) 좌표에서 두 손가락 사이 공간의 점 개수.
+        tool_tip: z = 접근(아래) 방향 · x = 손가락이 닫히는 방향. 100 % 열면 손가락은 x ≈ ±5 cm 에 있다
+        → |x| < 3.5 cm · |y| < 5 cm · 손끝 위 0.3~3 cm 상자 안의 점 = 손에 남은 물체
+        (손끝 아래는 보지 않는다 — 막 놓은 물체가 아직 바로 밑에 있다)"""
+        try:
+            t = self.tf.lookup_transform("tool_tip", msg.header.frame_id, Time.from_msg(msg.header.stamp))
+        except Exception:
+            return
+        xyz, _ = cloud_to_arrays(msg)
+        P = xyz.reshape(-1, 3)
+        P = P[np.isfinite(P[:, 2])]
+        p = t.transform.translation
+        P = P @ quat_to_mat(t.transform.rotation).T + np.array([p.x, p.y, p.z])
+        n = int(np.count_nonzero((np.abs(P[:, 0]) < 0.035) & (np.abs(P[:, 1]) < 0.05) &
+                                 (P[:, 2] > -0.03) & (P[:, 2] < -0.003)))
+        self.pub_between.publish(Int32(data=n))
+
     def describe(self, pts, table_z):
         """한 덩어리의 3D 점 → DetectedObject (모양·중심·폭·방향·높이).
 
@@ -219,10 +242,14 @@ class ObjectDetector(Node):
         o.top_center = Point(x=float(cx), y=float(cy), z=table_z + top)
         o.width, o.length, o.height = width, max(length, width), top   # 윗면 기준 크기(표시용)
         # 집을 수 있나: 옆면까지 본 외곽 폭과 윗면 폭 중 큰 쪽으로 보수적으로 판정
-        grip_w = max(width, float(min(a_all, b_all)))
-        o.graspable = grip_w <= float(c["max_grip_width"])
+        # 집을 수 있나: 윗면 폭 ≤ max_grip_width, 그리고 옆면까지 본 외곽 폭 ≤ 그리퍼 최대 벌림
+        #   (외곽 폭은 비스듬히 보인 옆면·경계 잡음이 섞여 1~2 cm 크게 나온다 — 실기 사과: 윗면 8.2 · 외곽 9.7 cm)
+        outer = float(min(a_all, b_all))
+        o.graspable = width <= float(c["max_grip_width"]) and outer <= self.max_open
         if not o.graspable:
-            o.note = f"너무 넓음(외곽 {grip_w * 100:.1f} cm > {float(c['max_grip_width']) * 100:.1f} cm)"
+            o.note = (f"너무 넓음(윗면 {width * 100:.1f} cm > {float(c['max_grip_width']) * 100:.1f} cm)"
+                      if width > float(c["max_grip_width"]) else
+                      f"너무 넓음(외곽 {outer * 100:.1f} cm > 벌림 {self.max_open * 100:.0f} cm)")
         return o
 
     # ------------------------------------------------------------------ 발행

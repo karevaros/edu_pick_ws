@@ -76,9 +76,10 @@ class GripperAdapter(Node):
         ActionServer(self, FollowJointTrajectory, "follow_joint_trajectory", self._on_goal,
                      callback_group=self._cb)
         self.declare_parameter("init_wait", 3.0)        # 초기화 뒤 기다리는 시간 [s]
+        self.declare_parameter("init_on_start", True)   # false = 시작할 때 초기화·열기를 하지 않음(물체를 쥔 채 재접속할 때)
         # 실기: 시작하자마자 초기화해 둔다. 첫 집기 직전에 초기화하면 끝나기 전에 명령이 와서
         #   그리퍼가 움직이지 않았다(2026-11-04 실기, 사과). 초기화 → 기다림 → 100 % 열기.
-        if not self.dry:
+        if not self.dry and self.get_parameter("init_on_start").value:
             threading.Thread(target=self._startup_init, daemon=True).start()
         self.get_logger().info("그리퍼 어댑터 시작" + ("  [dry_run: 명령을 보내지 않음]" if self.dry else ""))
 
