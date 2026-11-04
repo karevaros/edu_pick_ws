@@ -11,4 +11,6 @@ planner_configs:
   RRTConnect: {type: geometric::RRTConnect, range: 0.0}
 arm:
   default_planner_config: RRTConnect
+  # 경로를 더 촘촘히 검사(기본 0.005) — 쥔 물체가 장애물 옆을 지날 때 '계획은 됐는데 사후 검사에서 무효'가 반복됐다
+  longest_valid_segment_fraction: 0.002
   planner_configs: [RRTConnect]

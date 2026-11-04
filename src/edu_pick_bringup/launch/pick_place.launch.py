@@ -174,7 +174,7 @@ def generate_launch_description():
                               description="true = 제어박스 Simulation 모드(팔 안 움직임) / false = 🔴 실제 구동"),
         DeclareLaunchArgument("servo_t2", default_value="", description="무선 연결이면 0.1 (유선은 비워 둠)"),
         DeclareLaunchArgument("speed_bar", default_value="0.2"),
-        DeclareLaunchArgument("max_joint_velocity", default_value="0.5",
+        DeclareLaunchArgument("max_joint_velocity", default_value="0.8",
                               description="관절 속도 상한[rad/s] — 이보다 빠른 명령은 하드웨어에서 잘린다"),
         DeclareLaunchArgument("gripper_dry_run", default_value="auto",
                               description="auto = 실제 구동(cb_simulation:=false)일 때만 그리퍼 명령을 보냄 / true / false"),

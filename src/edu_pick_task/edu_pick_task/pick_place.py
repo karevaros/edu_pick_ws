@@ -30,7 +30,13 @@
    '위에서 아래로 집기' = tool_tip z축이 월드 -z 를 향하는 자세.
 """
 import argparse
+import contextlib
+import csv
+import datetime
+import functools
+import json
 import math
+import os
 import sys
 import threading
 import time
@@ -56,7 +62,7 @@ from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from edu_pick_msgs.msg import DetectedObjectArray
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, String
 
 ARM_JOINTS = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
 GROUP, TIP, WORLD = "arm", "tool_tip", "world"
@@ -65,6 +71,17 @@ GRIPPER_OPEN, GRIPPER_CLOSED = 0.6, 0.0          # rg2_finger_joint1 [rad] (100 
 
 class StepFailed(Exception):
     pass
+
+
+def timed(category, name=None):
+    """메서드 실행 시간을 기록하는 장식자 — 분류(category)·이름은 timing.csv 로 간다."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *a, **kw):
+            with self.timer(category, name or fn.__name__):
+                return fn(self, *a, **kw)
+        return wrapper
+    return deco
 
 
 def down_quat(yaw):
@@ -91,6 +108,13 @@ class PickPlace(Node):
 
         self.joints = {}
         self.active_goal = None
+        # ── 시간 계측 ── 순서대로 일어난 일(timeline) + 인식 노드의 프레임별 처리 시간
+        self.timeline = []            # dict(cycle, step, category, name, start, dur)
+        self.det_frames = []          # 인식 노드가 보낸 프레임별 단계 시간(ms)
+        self.cur_cycle, self.cur_step = 0, ""
+        self.t_start = time.time()
+        self.create_subscription(String, "/edu_pick/detector_timing",
+                                 lambda m: self.det_frames.append(json.loads(m.data)), 50)
         self.objects, self.objects_time = None, 0.0
         self.create_subscription(JointState, "/joint_states", self._on_js, 10)
         self.create_subscription(DetectedObjectArray, "/edu_pick/objects", self._on_objects, 10)
@@ -109,11 +133,74 @@ class PickPlace(Node):
         self.grip = ActionClient(self, FollowJointTrajectory, "/gripper_controller/follow_joint_trajectory")
         # 정지용 (cancel_motion)
         from action_msgs.srv import CancelGoal
-        from std_msgs.msg import String
         self.stop_pub = self.create_publisher(String, "/trajectory_execution_event", 10)
         from moveit_msgs.msg import DisplayTrajectory
         self.display_pub = self.create_publisher(DisplayTrajectory, "/display_planned_path", 10)
         self.ctrl_cancel = self.create_client(CancelGoal, "/arm_controller/follow_joint_trajectory/_action/cancel_goal")
+
+    # ================================================================ 시간 계측
+    @contextlib.contextmanager
+    def timer(self, category, name):
+        t0 = time.time()
+        try:
+            yield
+        finally:
+            self.timeline.append({"cycle": self.cur_cycle, "step": self.cur_step, "category": category,
+                                  "name": name, "start": t0 - self.t_start, "dur": time.time() - t0})
+
+    def save_timing(self, root):
+        """timing.csv · detector_frames.csv · summary.txt 를 저장하고 요약을 출력한다."""
+        d = os.path.join(os.path.expanduser(root), datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "timing.csv"), "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["cycle", "step", "category", "name", "start", "dur"])
+            w.writeheader()
+            for r in self.timeline:
+                w.writerow({**r, "start": f"{r['start']:.3f}", "dur": f"{r['dur']:.3f}"})
+        stages = []
+        for fr in self.det_frames:
+            for k in fr["ms"]:
+                if k not in stages:
+                    stages.append(k)
+        with open(os.path.join(d, "detector_frames.csv"), "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["stamp", "objects"] + stages)
+            for fr in self.det_frames:
+                w.writerow([f"{fr['stamp']:.3f}", fr["objects"]] + [fr["ms"].get(k, "") for k in stages])
+        lines = self.timing_summary(stages)
+        with open(os.path.join(d, "summary.txt"), "w") as f:
+            f.write("\n".join(lines) + "\n")
+        print("\n".join(lines))
+        print(f"\n시간 기록 저장: {d}")
+
+    def timing_summary(self, stages):
+        L = ["", "━━━ 시간 분석 ━━━"]
+        seq = [r for r in self.timeline if r["category"] != "사람확인"]
+        total = sum(r["dur"] for r in seq)
+        wall = time.time() - self.t_start
+        human = sum(r["dur"] for r in self.timeline if r["category"] == "사람확인")
+        L.append(f"전체 경과 {wall:.1f} s · 사람 확인 대기 {human:.1f} s (분석에서 제외) · 기록된 작업 {total:.1f} s")
+        cats = {}
+        for r in seq:
+            cats.setdefault(r["category"], [0.0, 0])
+            cats[r["category"]][0] += r["dur"]
+            cats[r["category"]][1] += 1
+        L.append(f"{'분류':<10}{'합계[s]':>9}{'비율':>7}{'횟수':>6}{'평균[s]':>9}")
+        for c, (t, n) in sorted(cats.items(), key=lambda kv: -kv[1][0]):
+            L.append(f"{c:<10}{t:>9.2f}{100 * t / max(total, 1e-9):>6.0f}%{n:>6}{t / n:>9.2f}")
+        cyc = {}
+        for r in seq:
+            if r["cycle"] > 0:
+                cyc[r["cycle"]] = cyc.get(r["cycle"], 0.0) + r["dur"]
+        if cyc:
+            L.append("물체별(사이클) 작업 시간: " + " · ".join(f"{k}번 {v:.1f} s" for k, v in sorted(cyc.items())))
+        if self.det_frames:
+            L.append(f"인식 노드 프레임 {len(self.det_frames)}개 — 단계별 평균 [ms] (병렬로 계속 돈다):")
+            for k in stages:
+                vals = [fr["ms"][k] for fr in self.det_frames if k in fr["ms"]]
+                if vals:
+                    L.append(f"   {k:<12}{np.mean(vals):8.1f}  (중앙 {np.median(vals):.1f} · 최대 {np.max(vals):.1f})")
+        return L
 
     # ================================================================ 기본 도구
     def _on_js(self, msg):
@@ -123,6 +210,7 @@ class PickPlace(Node):
     def _on_between(self, msg):
         self.between, self.between_time = msg.data, time.time()
 
+    @timed("놓기확인")
     def held_points(self, timeout=3.0):
         """그리퍼를 연 뒤 손가락 사이에 보이는 점 개수(멈춘 뒤 들어온 값). 카메라가 없으면 None."""
         t_req = time.time() + 0.5
@@ -147,6 +235,11 @@ class PickPlace(Node):
     def run_action(self, client, goal, timeout, what):
         if not client.wait_for_server(timeout_sec=5.0):
             raise StepFailed(f"{what}: 액션 서버가 없습니다 ({client._action_name})")
+        cat = {id(self.move): "경로계획", id(self.exe): "로봇동작", id(self.grip): "그리퍼"}.get(id(client), "기타")
+        with self.timer(cat, what):
+            return self._run_action(client, goal, timeout, what)
+
+    def _run_action(self, client, goal, timeout, what):
         gh = self.wait(client.send_goal_async(goal), 10.0, what)
         if not gh.accepted:
             raise StepFailed(f"{what}: 목표가 거부됨")
@@ -166,7 +259,6 @@ class PickPlace(Node):
             ② arm_controller 액션의 목표 전부 취소   — 컨트롤러가 직접 멈춤
           그리고 '응답'이 아니라 **관절값이 실제로 멈췄는지**로 확인한다."""
         from action_msgs.srv import CancelGoal
-        from std_msgs.msg import String
         self.stop_pub.publish(String(data="stop"))
         req = CancelGoal.Request()                     # 빈 goal_info = 모든 목표 취소
         if self.ctrl_cancel.wait_for_service(timeout_sec=1.0):
@@ -237,6 +329,7 @@ class PickPlace(Node):
         if res.error_code.val != MoveItErrorCodes.SUCCESS:
             raise StepFailed(f"{what}: 실행 실패 (오류 코드 {res.error_code.val})")
 
+    @timed("경로계획", "IK")
     def solve_ik(self, pose):
         """손끝 목표 자세 → 관절값. 그리퍼는 180° 대칭이라 yaw 와 yaw+180° 둘 다 풀어 덜 도는 쪽을 쓴다."""
         best = None
@@ -289,7 +382,8 @@ class PickPlace(Node):
         req.max_step = 0.005            # 5 mm 마다 IK
         req.jump_threshold = 0.0
         req.avoid_collisions = True
-        res = self.wait(self.cart.call_async(req), 10.0, what)
+        with self.timer("경로계획", f"직선 경로({what})"):
+            res = self.wait(self.cart.call_async(req), 10.0, what)
         if res.fraction < 0.99:
             raise StepFailed(f"{what}: 직선 경로를 {res.fraction * 100:.0f}% 밖에 못 만듦")
         traj = res.solution.joint_trajectory
@@ -301,7 +395,7 @@ class PickPlace(Node):
 
     def _retime(self, traj, dist):
         """직선 경로에 시간을 붙인다 — 부드럽게 출발·정지(코사인 속도).
-        평균 속도 linear_speed, 단 어느 관절도 0.35 rad/s 를 넘지 않게 전체 시간을 늘린다."""
+        평균 속도 linear_speed, 단 어느 관절도 linear_joint_max 를 넘지 않게 전체 시간을 늘린다."""
         q = np.array([p.positions for p in traj.points])
         n = len(q)
         if n < 2:
@@ -312,9 +406,10 @@ class PickPlace(Node):
             t = T / math.pi * np.arccos(1 - 2 * s)          # s(t) = (1 - cos(πt/T)) / 2 의 역함수
             dt = np.diff(t)
             v = np.max(np.abs(np.diff(q, axis=0)) / np.maximum(dt[:, None], 1e-6))
-            if v <= 0.35:
+            vmax = float(self.m.get("linear_joint_max", 0.35))
+            if v <= vmax:
                 break
-            T *= v / 0.35 * 1.05
+            T *= v / vmax * 1.05
         for p, ti in zip(traj.points, t):
             p.time_from_start = Duration(sec=int(ti), nanosec=int((ti % 1) * 1e9))
             p.velocities, p.accelerations = [], []
@@ -343,6 +438,7 @@ class PickPlace(Node):
             sp.type, sp.dimensions = SolidPrimitive.BOX, [width + 2 * pad, length + 2 * pad, height + pad]
         return sp
 
+    @timed("장면갱신")
     def _apply(self, ps, what):
         if not self.apply_scene.wait_for_service(timeout_sec=5.0):
             raise StepFailed("/apply_planning_scene 서비스 없음")
@@ -383,7 +479,8 @@ class PickPlace(Node):
                                     touch_links=["rg2_leftfinger", "rg2_rightfinger", "rg2_hand", TIP])
         a.object.id, a.object.operation = "held_object", CollisionObject.ADD
         a.object.header.frame_id = TIP
-        a.object.primitives = [self._primitive(obj.shape, obj.width, obj.length, obj.height, 0.003)]
+        # 여유 1.2 cm: 인식 길이가 실제보다 짧게 나올 수 있다(누운 병 17 cm ↔ 실제 약 20 cm)
+        a.object.primitives = [self._primitive(obj.shape, obj.width, obj.length, obj.height, 0.012)]
         p = Pose()
         p.position.z = -depth + obj.height / 2
         p.orientation.w = 1.0
@@ -425,6 +522,7 @@ class PickPlace(Node):
         return GRIPPER_OPEN * pct / 100.0, pct
 
     # ================================================================ 인식
+    @timed("인식대기")
     def detect(self, timeout=5.0):
         """대기위치에 멈춘 뒤 들어온 인식 결과만 쓴다(이동 중에 찍힌 결과는 버림)."""
         t_req = time.time() + 1.0                   # 멈춘 뒤 1초 이후 결과
@@ -461,8 +559,10 @@ class PickPlace(Node):
         print(text, flush=True)
 
     def step(self, no, name):
+        self.cur_step = str(no)
         self.say(f"\n[{no:>3}] {name}")
 
+    @timed("사람확인")
     def confirm(self, text):
         """단계 모드: 실제로 움직이기 직전에 멈추고 Enter 를 기다린다."""
         if self.step_mode:
@@ -498,12 +598,14 @@ class PickPlace(Node):
 
         done = 0
         for k in range(count):
+            self.cur_cycle = k + 1
             self.step(2, "대기위치로 이동")
             self.move_joints(poses["observe"], "대기위치")
 
             self.step(3, "물체인식")
             seen = self.detect()
-            obj = self.choose(seen, all_slots)
+            with self.timer("위치계산", "물체 선택"):
+                obj = self.choose(seen, all_slots)
             # 고른 물체 말고는 전부 장애물로: 인식한 다른 물체 + 이미 옮겨 놓은 물체
             others = [self.as_item(o) for o in seen if obj is None or o.id != obj.id]
             self.set_obstacles(others + self.placed)
@@ -511,6 +613,7 @@ class PickPlace(Node):
             if obj is None:
                 self.say("   → 집을 수 있는 물체가 없습니다. 종료합니다.")
                 break
+            t_pos = time.time()
             yaw = 0.0 if math.isnan(obj.yaw) else obj.yaw
             if math.isnan(obj.yaw):                 # 원형: 지금 손목 방향 그대로
                 q = self.tip_pose().orientation
@@ -543,6 +646,8 @@ class PickPlace(Node):
             advance = (g["tip_closed"] - g["tip_open"]) * (1.0 - min(obj.width / g["max_open"], 1.0))
             grip_z = max(grip_z, self.table_z + float(m["min_tip_clearance"]) + advance)
             above_z = obj.top_center.z + float(m["approach_height"])
+            self.timeline.append({"cycle": self.cur_cycle, "step": self.cur_step, "category": "위치계산",
+                                  "name": "잡는 높이·방향", "start": t_pos - self.t_start, "dur": time.time() - t_pos})
             self.say(f"   → 선택: {obj.id} ({obj.shape}) · 집기 방향 {math.degrees(yaw):.0f}° · "
                      f"손끝 높이 {grip_z:.3f} m (닫으면 {advance * 100:.1f} cm 더 내려감 → 테이블 위 "
                      f"{(grip_z - advance - self.table_z) * 100:.1f} cm)")
@@ -568,7 +673,9 @@ class PickPlace(Node):
             self.step(8, "하역 위치 위로 이동")
             place_xy = slots[k]
             self.say(f"   → 하역 위치 ({place_xy[0]:.2f}, {place_xy[1]:.2f})")
-            self.move_above(place_xy[0], place_xy[1], place_above, yaw, "하역 위치 이동")
+            # 박스형(긴 물체)은 정해진 방향으로 놓는다 — 원형은 방향이 상관없어 손목을 돌리지 않는다
+            place_yaw = yaw if obj.shape == "round" else math.radians(float(self.scene["place"].get("yaw_deg", 0.0)))
+            self.move_above(place_xy[0], place_xy[1], place_above, place_yaw, "하역 위치 이동")
 
             self.step(9, f"하강 {(place_above - release_z) * 100:.1f} cm")
             self.move_linear(release_z - place_above, "하강")
@@ -623,6 +730,7 @@ def main():
     ap.add_argument("--step", action="store_true", help="단계마다 Enter 로 진행")
     ap.add_argument("--count", type=int, default=1, help="옮길 물체 개수")
     ap.add_argument("--shape", choices=["round", "box"], help="이 모양만 집는다")
+    ap.add_argument("--log-dir", default="~/edu_pick_runs", help="시간 기록을 저장할 폴더")
     ap.add_argument("--first-slot", type=int, default=0,
                     help="하역 칸 시작 번호 (앞 칸에 이미 물체가 있을 때. 예: 1 → 둘째 칸부터)")
     args, ros_args = ap.parse_known_args()
@@ -646,6 +754,10 @@ def main():
         print("\n중단(Ctrl+C) — " + node.cancel_motion(), flush=True)
         code = 130
     finally:
+        try:
+            node.save_timing(args.log_dir)
+        except Exception as e:
+            print(f"(시간 기록 저장 실패: {e})")
         ex.shutdown()
         node.destroy_node()
         if rclpy.ok():

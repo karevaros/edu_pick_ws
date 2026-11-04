@@ -32,7 +32,9 @@ from geometry_msgs.msg import Point
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import Image, PointCloud2
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, String
+import json
+import time
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -80,6 +82,8 @@ class ObjectDetector(Node):
         self.pub_img = self.create_publisher(Image, "/edu_pick/debug_image", 2)
         # 손가락 사이에 보이는 점 개수 — 그리퍼를 연 상태에서 물체가 아직 손에 남아 있는지 확인용
         self.pub_between = self.create_publisher(Int32, "/edu_pick/between_fingers", 2)
+        # 단계별 처리 시간(ms) — 프레임마다 JSON 으로 발행 (pick_place 가 기록·분석)
+        self.pub_timing = self.create_publisher(String, "/edu_pick/detector_timing", 10)
         self.max_open = float(scene.get("gripper", {}).get("max_open", 0.10))
         self.create_timer(1.0 / float(self.get_parameter("rate").value), self.process)
         self.get_logger().info(f"물체 인식 시작 — 입력 {self.get_parameter('cloud_topic').value}")
@@ -89,6 +93,14 @@ class ObjectDetector(Node):
         msg, self._last = self._last, None
         if msg is None:
             return
+        tm = {}                                     # 단계별 처리 시간 [ms]
+        t0 = tk = time.perf_counter()
+
+        def lap(name):
+            nonlocal tk
+            now = time.perf_counter()
+            tm[name] = tm.get(name, 0.0) + (now - tk) * 1000.0
+            tk = now
         if msg.height <= 1:
             self.get_logger().error("점군이 격자형이 아닙니다 — 카메라를 pointcloud.ordered_pc:=true 로 띄우세요.",
                                     throttle_duration_sec=5.0)
@@ -101,9 +113,11 @@ class ObjectDetector(Node):
             self.get_logger().warn(f"TF 없음 {self.world}←{msg.header.frame_id}: {e}", throttle_duration_sec=5.0)
             return
         self._count_between_fingers(msg)
+        lap("TF·손가락확인")
         R = quat_to_mat(t.transform.rotation)
         p = t.transform.translation
         xyz_cam, rgb = cloud_to_arrays(msg)
+        lap("점군해석")
         H, W, _ = xyz_cam.shape
         valid = np.isfinite(xyz_cam[..., 2]) & (xyz_cam[..., 2] > 0.05)
         P = xyz_cam.reshape(-1, 3) @ R.T + np.array([p.x, p.y, p.z])
@@ -112,6 +126,7 @@ class ObjectDetector(Node):
 
         c = self.cfg
         roi = valid & (X > c["roi_x"][0]) & (X < c["roi_x"][1]) & (Y > c["roi_y"][0]) & (Y < c["roi_y"][1])
+        lap("좌표변환")
         if roi.sum() < 500:
             self._publish([], msg.header.stamp, rgb, None)
             return
@@ -126,6 +141,7 @@ class ObjectDetector(Node):
                 k = int(np.argmax(hist))
                 if hist[k] > 0.15 * zs.size:
                     table_z = float(0.5 * (edges[k] + edges[k + 1]))
+        lap("테이블면추정")
 
         # ③ 물체 마스크
         hgt = Z - table_z
@@ -144,6 +160,7 @@ class ObjectDetector(Node):
 
         # ④ 덩어리마다 ⑤ 모양·크기·방향
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        lap("물체분리")
         objects = []
         for cnt in contours:
             if cv2.contourArea(cnt) < 100:
@@ -159,7 +176,9 @@ class ObjectDetector(Node):
                 continue
             d = np.linalg.norm(pts[:, :2] - np.median(pts[:, :2], axis=0), axis=1)
             pts = pts[d <= 1.5 * np.percentile(d, 90)]
+            lap("물체분리")                          # 덩어리별 점 추출까지 '분리'
             o = self.describe(pts, table_z)
+            lap("물체판별")                          # 모양·크기·방향·위치 = 이 실습의 '추론'에 해당
             if o is None:
                 continue
             # 시야(영상 테두리)나 인식 영역(roi) 경계에 걸린 덩어리는 일부만 보인 것 → 크기를 믿을 수 없다
@@ -177,6 +196,13 @@ class ObjectDetector(Node):
             objects.append((o, cnt))
 
         self._publish(objects, msg.header.stamp, rgb, mask, table_z)
+        lap("결과발행")
+        tm["합계"] = (time.perf_counter() - t0) * 1000.0
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        tm["카메라→처리완료"] = (self.get_clock().now().nanoseconds * 1e-9 - stamp) * 1000.0
+        self.pub_timing.publish(String(data=json.dumps(
+            {"stamp": stamp, "objects": len(objects), "ms": {k: round(v, 2) for k, v in tm.items()}},
+            ensure_ascii=False)))
 
     def _count_between_fingers(self, msg):
         """손끝(tool_tip) 좌표에서 두 손가락 사이 공간의 점 개수.
