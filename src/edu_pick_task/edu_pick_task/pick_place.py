@@ -668,7 +668,11 @@ class PickPlace(Node):
             self.move_linear(above_z - grip_z, "상승")
 
             # 놓을 때 손끝 높이 = 잡을 때 손끝이 물체 바닥에서 떨어진 높이 + 여유
-            release_z = self.table_z + (grip_z - (obj.top_center.z - obj.height)) + float(m["release_gap"])
+            tall = obj.height >= 2.5 * obj.width
+            gap = float(m.get("release_gap_tall", m["release_gap"])) if tall else float(m["release_gap"])
+            release_z = self.table_z + (grip_z - (obj.top_center.z - obj.height)) + gap
+            if tall:
+                self.say(f"   → 키 큰 물체(높이 {obj.height * 100:.0f} cm · 폭 {obj.width * 100:.1f} cm) — 테이블 위 {gap * 100:.0f} cm 에서 놓음")
             place_above = release_z + float(m["approach_height"])
             self.step(8, "하역 위치 위로 이동")
             place_xy = slots[k]
