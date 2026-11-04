@@ -202,12 +202,15 @@ class ObjectDetector(Node):
             # 깊이 카메라는 물체 경계에 '튀는 점'(앞뒤 거리가 섞인 점)을 만든다 → 테두리 2 px 를 깎고,
             # 그래도 남은 먼 점은 중심 거리로 버린다 (1~2 % 의 점만으로 사과가 29 cm 로 부푼 적이 있다)
             core = cv2.erode(blob, k5)
-            sel = (core > 0) & (mask > 0)
+            # valid: 마스크를 메우는 연산(CLOSE)이 깊이 없는(NaN) 픽셀을 끌어들일 수 있다 → 유효한 점만
+            sel = (core > 0) & (mask > 0) & valid
             pts = P[sel]
             if len(pts) < max(15, 50 // step ** 2):
                 continue
             d = np.linalg.norm(pts[:, :2] - np.median(pts[:, :2], axis=0), axis=1)
             pts = pts[d <= 1.5 * np.percentile(d, 90)]
+            if len(pts) < 15:
+                continue
             lap("물체분리")                          # 덩어리별 점 추출까지 '분리'
             o = self.describe(pts, table_z)
             lap("물체판별")                          # 모양·크기·방향·위치 = 이 실습의 '추론'에 해당
