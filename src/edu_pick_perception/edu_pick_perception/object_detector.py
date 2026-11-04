@@ -81,6 +81,7 @@ class ObjectDetector(Node):
         self.declare_parameter("rate", 3.0)     # 초당 처리 횟수
         # 솎아내기: 2 = 가로·세로 2칸마다 1점(848×480 → 424×240, 점 1/4). 대기위치에서 점 간격 약 1.2 mm
         self.declare_parameter("decimate", 2)
+        self._step = 1
 
         self.world = self.get_parameter("world_frame").value
         with open(self.get_parameter("scene_file").value) as f:
@@ -142,6 +143,7 @@ class ObjectDetector(Node):
             return
         self._retries = 0
         step = max(1, int(self.get_parameter("decimate").value))
+        self._step = step
         xyz_cam, rgb = cloud_to_arrays(msg, step)       # 메시지 해석은 한 번만
         lap("점군해석")
         self._count_between_fingers(msg, xyz_cam, step)
@@ -362,8 +364,13 @@ class ObjectDetector(Node):
         img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         if mask is not None:
             img[mask > 0] = (0.5 * img[mask > 0] + [0, 110, 0]).astype(np.uint8)
+        # 솎아낸 영상은 작다 → 원래 크기로 키운 뒤 글자를 쓴다(작은 영상에 쓰면 글자가 겹친다)
+        k = self._step
+        if k > 1:
+            img = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_NEAREST)
         for o, cnt in objects:
             col = (0, 255, 0) if o.graspable else (0, 0, 255)
+            cnt = cnt * k
             cv2.drawContours(img, [cnt], -1, col, 2)
             x, y, _, _ = cv2.boundingRect(cnt)
             label = f"{o.id} {o.shape} {o.width * 100:.1f}cm" + ("" if o.graspable else " X")
