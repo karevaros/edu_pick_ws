@@ -416,10 +416,11 @@ class PickPlace(Node):
         except StepFailed:
             pass
 
-    def close_target(self, width):
+    def close_target(self, width, squeeze=None):
         """잡기 목표 관절값: 물체 폭보다 close_squeeze 만큼 좁게 → 닿는 순간부터 설정한 힘으로 쥔다."""
         g = self.scene["gripper"]
-        w = max(0.0, width - float(g.get("close_squeeze", 0.015)))
+        sq = float(g.get("close_squeeze", 0.015)) if squeeze is None else squeeze
+        w = max(0.0, width - sq)
         pct = min(100.0, 100.0 * w / float(g["max_open"]))
         return GRIPPER_OPEN * pct / 100.0, pct
 
@@ -523,6 +524,15 @@ class PickPlace(Node):
             #    그리퍼가 닫히지 않는다(실기에서 사과로 2번 확인) → 들어가는 깊이를 제한한다
             gcfg = self.scene["gripper"]
             max_depth = float(gcfg.get("palm_depth", 0.03)) - float(gcfg.get("palm_margin", 0.005))
+            # 누운 병(눌리는 물체): 얕게·덜 조여 잡는다 (찌그러져 안쪽 스위치를 누르지 않게)
+            lb = gcfg.get("lying_bottle")
+            lying = (lb is not None and obj.shape == "box" and obj.length >= 2.5 * obj.width
+                     and obj.height <= 1.5 * obj.width)
+            squeeze = float(lb["squeeze"]) if lying else None
+            if lying:
+                max_depth = min(max_depth, float(lb["max_insert"]))
+                self.say(f"   → 누운 병으로 판단(길이 {obj.length * 100:.0f} cm · 폭 {obj.width * 100:.1f} cm) — "
+                         f"얕게 {max_depth * 100:.1f} cm · 덜 조임 {squeeze * 100:.0f} cm")
             if depth > max_depth + 1e-4:
                 self.say(f"   → 잡는 깊이 {depth * 100:.1f} cm → {max_depth * 100:.1f} cm 로 제한 (그리퍼 안쪽 스위치)")
                 depth = max_depth
@@ -544,7 +554,7 @@ class PickPlace(Node):
             self.step(5, f"하강 {(above_z - grip_z) * 100:.1f} cm")
             self.move_linear(grip_z - above_z, "하강")
 
-            close_pos, close_pct = self.close_target(obj.width)
+            close_pos, close_pct = self.close_target(obj.width, squeeze)
             self.step(6, f"잡기 (물체 폭 {obj.width * 100:.1f} cm → 그리퍼 목표 {close_pct:.0f} %)")
             self.gripper(close_pos, "잡기")
             self.attach_held(obj, obj.top_center.z - grip_z)
