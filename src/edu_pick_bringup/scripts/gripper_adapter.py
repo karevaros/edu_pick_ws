@@ -35,6 +35,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from control_msgs.action import FollowJointTrajectory
 from sensor_msgs.msg import JointState
+import threading
 import time
 
 try:
@@ -74,7 +75,25 @@ class GripperAdapter(Node):
         self.create_timer(1 / 30, self._pub_js)
         ActionServer(self, FollowJointTrajectory, "follow_joint_trajectory", self._on_goal,
                      callback_group=self._cb)
+        self.declare_parameter("init_wait", 3.0)        # 초기화 뒤 기다리는 시간 [s]
+        # 실기: 시작하자마자 초기화해 둔다. 첫 집기 직전에 초기화하면 끝나기 전에 명령이 와서
+        #   그리퍼가 움직이지 않았다(2026-11-04 실기, 사과). 초기화 → 기다림 → 100 % 열기.
+        if not self.dry:
+            threading.Thread(target=self._startup_init, daemon=True).start()
         self.get_logger().info("그리퍼 어댑터 시작" + ("  [dry_run: 명령을 보내지 않음]" if self.dry else ""))
+
+    def _startup_init(self):
+        init = self.get_parameter("cmd_init").value
+        if not init or not self._cli.wait_for_service(timeout_sec=60.0):
+            return
+        time.sleep(2.0)                                   # 팔 하드웨어가 자리 잡을 시간
+        if self._send(init):
+            time.sleep(float(self.get_parameter("init_wait").value))
+            self._initialized = True
+            self._send(self.get_parameter("cmd_move").value.format(
+                ratio_pct=100.0, force_pct=int(self.get_parameter("force_pct").value)))
+            self._pos = self.j_open
+            self.get_logger().info("그리퍼 초기화 완료 → 100 % 열림")
 
     def _ratio(self, pos):
         r = (pos - self.j_closed) / (self.j_open - self.j_closed)
@@ -115,7 +134,7 @@ class GripperAdapter(Node):
                 gh.abort()
                 result.error_code = FollowJointTrajectory.Result.PATH_TOLERANCE_VIOLATED
                 return result
-            time.sleep(float(self.get_parameter("settle_sec").value))
+            time.sleep(float(self.get_parameter("init_wait").value))
             self._initialized = True
         script = self.get_parameter("cmd_move").value.format(
             ratio_pct=self._ratio(target) * 100.0, force_pct=int(self.get_parameter("force_pct").value))

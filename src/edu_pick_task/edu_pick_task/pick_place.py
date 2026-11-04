@@ -5,6 +5,7 @@
     ros2 run edu_pick_task pick_place --step       # 움직이기 직전마다 멈춤: 경로를 RViz 로 확인 → Enter (실기 권장)
     ros2 run edu_pick_task pick_place --count 2    # 물체 2개를 차례로 옮김
     ros2 run edu_pick_task pick_place --shape round  # 원형(캔·병 윗면·공·사과)만 집는다
+    ros2 run edu_pick_task pick_place --first-slot 1 # 하역 첫 칸이 이미 차 있을 때 둘째 칸부터
 
 ■ 시나리오 (12단계)
    1 초기위치      관절 목표  (MoveIt 계획)
@@ -454,9 +455,14 @@ class PickPlace(Node):
             except EOFError:
                 raise StepFailed("입력이 닫혀 실행하지 않고 중단합니다")
 
-    def run(self, count=1):
+    def run(self, count=1, first_slot=0):
         poses = {k: [math.radians(v) for v in vals] for k, vals in self.scene["poses"].items()}
-        slots = self.place_slots(count)
+        all_slots = self.place_slots(first_slot + count)
+        slots = all_slots[first_slot:]
+        # 앞 칸에는 이전 실행에서 놓은 물체가 있다고 보고 장애물로 둔다 (카메라 인식 영역 밖이라 안 보인다)
+        for i, (sx, sy) in enumerate(all_slots[:first_slot]):
+            self.placed.append({"id": f"earlier_{i}", "shape": "round", "x": sx, "y": sy, "bottom": self.table_z,
+                                "width": 0.07, "length": 0.07, "height": 0.12, "yaw": float("nan")})
         m = self.m
 
         self.say("MoveIt·컨트롤러·관절 상태 기다리는 중 …")
@@ -470,7 +476,7 @@ class PickPlace(Node):
                 raise StepFailed(f"{n} 서비스 없음 — move_group 이 떠 있나요?")
 
         self.detach_held(strict=False)     # 앞 실행이 남긴 장면 정리
-        self.set_obstacles([])
+        self.set_obstacles(list(self.placed))
         self.step(1, "초기위치로 이동")
         self.move_joints(poses["home"], "초기위치")
 
@@ -481,7 +487,7 @@ class PickPlace(Node):
 
             self.step(3, "물체인식")
             seen = self.detect()
-            obj = self.choose(seen, slots)
+            obj = self.choose(seen, all_slots)
             # 고른 물체 말고는 전부 장애물로: 인식한 다른 물체 + 이미 옮겨 놓은 물체
             others = [self.as_item(o) for o in seen if obj is None or o.id != obj.id]
             self.set_obstacles(others + self.placed)
@@ -497,7 +503,15 @@ class PickPlace(Node):
             # 낮은 물체(높이 < 폭×1.3 — 공·사과·누운 병·납작한 박스)는 가운데 높이:
             #   누운 병을 축보다 위에서 잡으면 들 때 미끄러진다
             low = obj.height < 1.3 * obj.width
-            grip_z = obj.top_center.z - (obj.height * 0.5 if low else float(m["grip_depth"]))
+            depth = obj.height * 0.5 if low else float(m["grip_depth"])
+            # 🔴 RG2 안쪽 스위치: 물체 윗면이 손가락 끝에서 palm_depth 보다 깊이 들어가면 스위치가 눌려
+            #    그리퍼가 닫히지 않는다(실기에서 사과로 2번 확인) → 들어가는 깊이를 제한한다
+            gcfg = self.scene["gripper"]
+            max_depth = float(gcfg.get("palm_depth", 0.03)) - float(gcfg.get("palm_margin", 0.005))
+            if depth > max_depth + 1e-4:
+                self.say(f"   → 잡는 깊이 {depth * 100:.1f} cm → {max_depth * 100:.1f} cm 로 제한 (그리퍼 안쪽 스위치)")
+                depth = max_depth
+            grip_z = obj.top_center.z - depth
             # RG2 는 닫을수록 손끝이 앞(아래)으로 나온다 — 실측 2점(10 cm 벌림 20.5 cm · 0 cm 24 cm) 사이 직선 근사.
             # 물체 폭까지 닫혔을 때의 손끝도 테이블 위 min_tip_clearance 이상이어야 한다.
             g = self.scene["gripper"]
@@ -541,7 +555,7 @@ class PickPlace(Node):
             self.step(11, "상승")
             self.move_linear(place_above - release_z, "상승")
             # 놓은 물체는 손이 빠져나온 '뒤에' 장애물로 등록한다(손가락이 둘러싼 채로 넣으면 시작부터 충돌)
-            it = self.as_item(obj, oid=f"placed_{k}")
+            it = self.as_item(obj, oid=f"placed_{first_slot + k}")
             it.update(x=place_xy[0], y=place_xy[1], bottom=self.table_z)
             self.placed.append(it)
             self.set_obstacles(list(self.placed))
@@ -567,6 +581,8 @@ def main():
     ap.add_argument("--step", action="store_true", help="단계마다 Enter 로 진행")
     ap.add_argument("--count", type=int, default=1, help="옮길 물체 개수")
     ap.add_argument("--shape", choices=["round", "box"], help="이 모양만 집는다")
+    ap.add_argument("--first-slot", type=int, default=0,
+                    help="하역 칸 시작 번호 (앞 칸에 이미 물체가 있을 때. 예: 1 → 둘째 칸부터)")
     args, ros_args = ap.parse_known_args()
 
     # Ctrl+C 를 rclpy 가 가로채면 통신이 먼저 끊겨 '정지 명령'을 못 보낸다 → 직접 처리
@@ -578,7 +594,7 @@ def main():
     threading.Thread(target=ex.spin, daemon=True).start()
     code = 0
     try:
-        node.run(args.count)
+        node.run(args.count, args.first_slot)
     except StepFailed as e:
         print(f"\n❌ 중단: {e}", flush=True)
         if node.active_goal is not None:          # 시간초과 등으로 빠져나왔으면 남은 동작도 멈춘다

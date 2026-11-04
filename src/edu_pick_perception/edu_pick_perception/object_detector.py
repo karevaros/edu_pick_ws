@@ -166,6 +166,8 @@ class ObjectDetector(Node):
             if (at_image_edge or at_roi_edge) and o.graspable:   # 이미 '너무 넓음'이면 그 이유가 우선
                 o.graspable = False
                 o.note = "가장자리에 잘림"
+            if o.width < float(c.get("min_width", 0.0)):     # 케이블처럼 가는 것은 물체가 아니다
+                continue
             o.id = f"obj_{len(objects)}"
             objects.append((o, cnt))
 
