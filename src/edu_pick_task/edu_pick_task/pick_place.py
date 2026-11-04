@@ -643,6 +643,10 @@ class PickPlace(Node):
             if depth > max_depth + 1e-4:
                 self.say(f"   → 잡는 깊이 {depth * 100:.1f} cm → {max_depth * 100:.1f} cm 로 제한 (그리퍼 안쪽 스위치)")
                 depth = max_depth
+            # 사용자 보정: 툴 +z(접근 방향)로 더 깊이. 단 스위치 − 2 mm 를 넘지 않게(하드 안전 한계)
+            extra = float(m.get("grip_extra_depth", 0.0))
+            hard_max = float(gcfg.get("palm_depth", 0.03)) - 0.002
+            depth = min(depth + extra, max(depth, hard_max))
             grip_z = obj.top_center.z - depth
             # RG2 는 닫을수록 손끝이 앞(아래)으로 나온다 — 실측 2점(10 cm 벌림 20.5 cm · 0 cm 24 cm) 사이 직선 근사.
             # 물체 폭까지 닫혔을 때의 손끝도 테이블 위 min_tip_clearance 이상이어야 한다.
