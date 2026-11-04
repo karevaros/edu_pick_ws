@@ -85,6 +85,12 @@ def _inject_hw_params(urdf, values):
     return urdf.replace(tag, tag + extra)
 
 
+def _scene(desc):
+    import yaml
+    with open(os.path.join(desc, "config", "scene.yaml")) as f:
+        return yaml.safe_load(f)
+
+
 def _setup(context):
     a = lambda n: context.launch_configurations[n]
     mode = a("mode")
@@ -126,7 +132,8 @@ def _setup(context):
         Node(package="controller_manager", executable="spawner", arguments=["joint_state_broadcaster"]),
         Node(package="controller_manager", executable="spawner", arguments=["arm_controller"]),
         Node(package="edu_pick_bringup", executable="gripper_adapter.py", name="gripper_adapter",
-             namespace="gripper_controller", output="screen", parameters=[{"dry_run": dry}]),
+             namespace="gripper_controller", output="screen",
+             parameters=[{"dry_run": dry, "force_pct": int(_scene(desc)["gripper"].get("force_pct", 40))}]),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory("edu_pick_moveit"), "launch", "move_group.launch.py"))),
         Node(package="edu_pick_perception", executable="object_detector", output="screen"),

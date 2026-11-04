@@ -81,9 +81,8 @@ class PickPlace(Node):
             self.scene = yaml.safe_load(f)
         self.m = self.scene["motion"]
         g = self.scene["gripper"]
-        # 시나리오의 '열기·잡기' 벌림 (scene.yaml gripper.open_pct / close_pct)
+        # '열기' 벌림 (scene.yaml gripper.open_pct). '잡기'는 물체마다 close_target() 으로 정한다
         self.grip_open = GRIPPER_OPEN * float(g.get("open_pct", 100)) / 100.0
-        self.grip_close = GRIPPER_OPEN * float(g.get("close_pct", 0)) / 100.0
         self.table_z = float(self.scene["table"]["top_z"])
         self.step_mode = step_mode
         self.shape_filter = shape        # None = 모양 무관 / "round" / "box"
@@ -199,9 +198,14 @@ class PickPlace(Node):
                                                        tolerance_below=1e-4, weight=1.0))
         r.goal_constraints = [c]
         goal.planning_options.plan_only = True          # ① 계획만 → ② 확인 → ③ 실행 (execute)
-        res = self.run_action(self.move, goal, 60.0, what)
-        if res.error_code.val != MoveItErrorCodes.SUCCESS:
-            raise StepFailed(f"{what}: 경로 계획 실패 (오류 코드 {res.error_code.val})")
+        # 계획은 무작위 탐색(RRTConnect)이라 가끔 실패하거나, 사후 검사에서 무효로 걸린다 → 최대 3번
+        for attempt in range(1, 4):
+            res = self.run_action(self.move, goal, 60.0, what)
+            if res.error_code.val == MoveItErrorCodes.SUCCESS:
+                break
+            self.say(f"   ⚠ {what}: 경로 계획 실패 (오류 코드 {res.error_code.val}) — 다시 계획 {attempt}/3")
+        else:
+            raise StepFailed(f"{what}: 경로 계획 3번 실패")
         self.execute(res.planned_trajectory, what)
 
     def execute(self, traj, what):
@@ -396,6 +400,13 @@ class PickPlace(Node):
         except StepFailed:
             pass
 
+    def close_target(self, width):
+        """잡기 목표 관절값: 물체 폭보다 close_squeeze 만큼 좁게 → 닿는 순간부터 설정한 힘으로 쥔다."""
+        g = self.scene["gripper"]
+        w = max(0.0, width - float(g.get("close_squeeze", 0.015)))
+        pct = min(100.0, 100.0 * w / float(g["max_open"]))
+        return GRIPPER_OPEN * pct / 100.0, pct
+
     # ================================================================ 인식
     def detect(self, timeout=5.0):
         """대기위치에 멈춘 뒤 들어온 인식 결과만 쓴다(이동 중에 찍힌 결과는 버림)."""
@@ -482,9 +493,11 @@ class PickPlace(Node):
             if math.isnan(obj.yaw):                 # 원형: 지금 손목 방향 그대로
                 q = self.tip_pose().orientation
                 yaw = 2 * math.atan2(q.y, q.x)
-            # 잡는 높이(손끝): 윗면에서 grip_depth 아래. 공처럼 낮고 둥근 물체는 가운데 높이.
-            ball_like = obj.shape == "round" and obj.height < 1.3 * obj.width
-            grip_z = obj.top_center.z - (obj.height * 0.5 if ball_like else float(m["grip_depth"]))
+            # 잡는 높이(손끝): 키 큰 물체는 윗면에서 grip_depth 아래.
+            # 낮은 물체(높이 < 폭×1.3 — 공·사과·누운 병·납작한 박스)는 가운데 높이:
+            #   누운 병을 축보다 위에서 잡으면 들 때 미끄러진다
+            low = obj.height < 1.3 * obj.width
+            grip_z = obj.top_center.z - (obj.height * 0.5 if low else float(m["grip_depth"]))
             # RG2 는 닫을수록 손끝이 앞(아래)으로 나온다 — 실측 2점(10 cm 벌림 20.5 cm · 0 cm 24 cm) 사이 직선 근사.
             # 물체 폭까지 닫혔을 때의 손끝도 테이블 위 min_tip_clearance 이상이어야 한다.
             g = self.scene["gripper"]
@@ -502,8 +515,9 @@ class PickPlace(Node):
             self.step(5, f"하강 {(above_z - grip_z) * 100:.1f} cm")
             self.move_linear(grip_z - above_z, "하강")
 
-            self.step(6, "잡기")
-            self.gripper(self.grip_close, "잡기")
+            close_pos, close_pct = self.close_target(obj.width)
+            self.step(6, f"잡기 (물체 폭 {obj.width * 100:.1f} cm → 그리퍼 목표 {close_pct:.0f} %)")
+            self.gripper(close_pos, "잡기")
             self.attach_held(obj, obj.top_center.z - grip_z)
 
             self.step(7, "상승")

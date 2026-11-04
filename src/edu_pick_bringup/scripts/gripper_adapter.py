@@ -52,7 +52,7 @@ class GripperAdapter(Node):
         self.declare_parameter("eval_service", "/rbpodo_hardware/eval")
         self.declare_parameter("joint_closed", 0.0)     # 0 %
         self.declare_parameter("joint_open", 0.6)       # 100 %
-        self.declare_parameter("force_pct", 40)         # 힘 [%] (RG2 최대 40 N 의 비율)
+        self.declare_parameter("force_pct", 40)         # 힘 [%] — launch 가 scene.yaml gripper.force_pct 를 넘긴다
         self.declare_parameter("settle_sec", 1.5)       # 명령 후 기다리는 시간
         self.declare_parameter("cmd_move", "gripper_macro 12,0,1,0,{ratio_pct:.0f},{force_pct},0,0,0,0")
         self.declare_parameter("cmd_init", "gripper_macro 12,0,0,0,0,0,0,0,0,0")   # 빈 값이면 보내지 않음

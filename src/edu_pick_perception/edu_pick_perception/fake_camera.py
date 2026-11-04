@@ -113,9 +113,10 @@ class FakeCamera(Node):
         prev, self.finger = self.finger, q
         if prev is None:
             return
-        if prev > 0.3 >= q:
+        # 닫히는 방향으로 움직이면 '쥐기', 열리는 방향이면 '놓기' (닫기 목표가 물체마다 달라 고정 문턱은 안 된다)
+        if q < prev - 0.05 and self.held is None:
             self._try_grasp()
-        elif prev < 0.3 <= q and self.held is not None:
+        elif q > prev + 0.05 and self.held is not None:
             self._release()
 
     def _try_grasp(self):
