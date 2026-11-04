@@ -8,20 +8,29 @@
   ① 점군(카메라 좌표) → TF 로 world(로봇 베이스) 좌표로 변환
   ② 테이블 높이 추정: 높이 히스토그램에서 가장 많은 높이 = 테이블 면
   ③ 테이블보다 min_height 이상 높은 점 = 물체 후보 (마스크)
+     (손끝 tool_tip 보다 높은 점 = 카메라에 비친 그리퍼 손가락 → 뺀다)
   ④ 마스크에서 덩어리(윤곽선) 찾기 → 덩어리마다 3D 점을 모아
   ⑤ 윗면 점들에서 튀는 점을 뺀 뒤 '최소 외접 사각형'을 씌운다
        · 가로세로가 비슷하고 사각형을 덜 채우면(원은 78.5%) → round (캔·병·공)
        · 아니면 → box
        · 짧은 변 길이 = 집을 폭, 짧은 변 방향 = 그리퍼가 닫힐 방향(yaw)
-  ⑥ 결과 발행
+  ⑥ 한 물체가 두 덩어리로 갈라진 것 합치기 (투명한 병은 깊이가 듬성듬성하다)
+  ⑦ 결과 발행
+
+  계산은 2D 영상 격자(덩어리 나누기)와 3D 점(치수) 을 섞어 쓴다 — 그래서 점군인데도 빠르다.
+  점군은 가로·세로 decimate 칸마다 하나만 쓴다(기본 2 → 점 1/4).
 
 ■ 토픽
   입력  /camera/d405/depth/color/points      (sensor_msgs/PointCloud2, 격자형)
   출력  /edu_pick/objects                     (edu_pick_msgs/DetectedObjectArray)
         /edu_pick/objects_markers             (RViz 표시)
         /edu_pick/debug_image                 (단계별 결과 그림 — rqt_image_view 로 보기)
+        /edu_pick/between_fingers             (std_msgs/Int32 — 손가락 사이 점 개수, 놓기 확인용)
+        /edu_pick/detector_timing             (std_msgs/String JSON — 단계별 처리 시간 [ms])
 """
+import json
 import math
+import time
 
 import cv2
 import numpy as np
@@ -33,13 +42,17 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import Image, PointCloud2
 from std_msgs.msg import Int32, String
-import json
-import time
 from tf2_ros import Buffer, TransformListener
-from visualization_msgs.msg import Marker, MarkerArray
+from visualization_msgs.msg import MarkerArray
 
 from edu_pick_msgs.msg import DetectedObject, DetectedObjectArray
 from edu_pick_perception.common import default_scene_file, quat_to_mat, object_markers
+
+# 손가락 사이 공간 (tool_tip 좌표 [m]) — 놓은 뒤 여기에 점이 남아 있으면 '아직 손에 있음'
+#   |x|: 놓을 때 '물체 폭 + release_margin(3 cm)' 만 여므로 손가락이 ±1.5 cm 바깥에 온다
+#   z: 손끝 위 0.3 ~ 3 cm (손끝 아래는 막 놓은 물체가 있으므로 보지 않는다)
+BETWEEN_X, BETWEEN_Y, BETWEEN_Z = 0.015, 0.05, (-0.03, -0.003)
+TALL_RATIO = 2.5          # 높이 ≥ 폭 × 2.5 = 키 큰 물체 (scene.yaml grasp_rules.tall_ratio 와 같은 값)
 
 
 def cloud_to_arrays(msg, step=1):
@@ -117,7 +130,7 @@ class ObjectDetector(Node):
         # ① 카메라 → world 변환. **점군을 찍은 시각**의 TF 를 쓴다
         #    (가장 최근 TF 를 쓰면 팔이 움직이는 중에 찍힌 점군이 엉뚱한 곳에 놓인다)
         #    🔴 카메라 시각이 관절 TF 보다 수십 ms 앞서면 '미래 시각'이라 아직 계산할 수 없다.
-        #       그런 프레임을 버리면 계속 결과가 안 나올 수 있다(실기 11회차) → 보관했다가 다음 주기에 다시
+        #       그런 프레임을 버리면 계속 결과가 안 나올 수 있다 → 보관했다가 다음 주기에 다시
         try:
             t = self.tf.lookup_transform(self.world, msg.header.frame_id, Time.from_msg(msg.header.stamp))
         except Exception as e:
@@ -163,7 +176,7 @@ class ObjectDetector(Node):
         # ③ 물체 마스크
         hgt = Z - table_z
         # 손가락 제외: 위에서 내려다보므로 물체는 항상 손끝(tool_tip)보다 아래에 있다.
-        #   손끝보다 1.5 cm 위의 점은 그리퍼 자신(손가락이 카메라 시야에 들어온다 — 실기에서 확인)
+        #   손끝보다 1.5 cm 위의 점은 그리퍼 자신(손가락이 카메라 시야에 들어온다)
         z_max = np.inf
         try:
             tip = self.tf.lookup_transform(self.world, "tool_tip", Time.from_msg(msg.header.stamp))
@@ -185,7 +198,7 @@ class ObjectDetector(Node):
             blob = np.zeros((H, W), np.uint8)
             cv2.drawContours(blob, [cnt], -1, 255, -1)
             # 깊이 카메라는 물체 경계에 '튀는 점'(앞뒤 거리가 섞인 점)을 만든다 → 테두리 2 px 를 깎고,
-            # 그래도 남은 먼 점은 중심 거리로 버린다 (실기에서 1~2% 의 점이 사과를 29 cm 로 늘렸다)
+            # 그래도 남은 먼 점은 중심 거리로 버린다 (1~2 % 의 점만으로 사과가 29 cm 로 부푼 적이 있다)
             core = cv2.erode(blob, k5)
             sel = (core > 0) & (mask > 0)
             pts = P[sel]
@@ -212,7 +225,7 @@ class ObjectDetector(Node):
             objects.append((o, cnt))
 
         # 한 물체가 여러 덩어리로 갈라진 것 합치기: 투명 PET 몸통은 깊이가 듬성듬성해서
-        #   세운 병이 '뚜껑'과 '몸통 조각'으로 나뉘어 잡혔다(실기 18회차 — 몸통 조각을 집으려다 뚜껑 덩어리에 막힘).
+        #   세운 병이 '뚜껑'과 '몸통 조각'으로 나뉜다(그대로 두면 몸통 조각을 집으려다 뚜껑 덩어리에 막힌다).
         #   중심이 다른(더 높은) 덩어리의 외곽 반경 안이면 같은 물체 → 더 높은 덩어리 하나로 남긴다
         objects.sort(key=lambda oc: -oc[0].height)
         merged = []
@@ -236,10 +249,8 @@ class ObjectDetector(Node):
             ensure_ascii=False)))
 
     def _count_between_fingers(self, msg, xyz_cam, step):
-        """손끝(tool_tip) 좌표에서 두 손가락 사이 공간의 점 개수.
-        tool_tip: z = 접근(아래) 방향 · x = 손가락이 닫히는 방향
-        → 가운데 기둥 |x| < 1.5 cm · |y| < 5 cm · 손끝 위 0.3~3 cm 안의 점 = 손에 남은 물체
-        (손끝 아래는 보지 않는다 — 막 놓은 물체가 아직 바로 밑에 있다)"""
+        """손끝(tool_tip) 좌표에서 두 손가락 사이 공간(BETWEEN_*)의 점 개수 = 손에 남은 물체.
+        tool_tip: z = 접근(아래) 방향 · x = 손가락이 닫히는 방향"""
         try:
             t = self.tf.lookup_transform("tool_tip", msg.header.frame_id, Time.from_msg(msg.header.stamp))
         except Exception:
@@ -249,9 +260,8 @@ class ObjectDetector(Node):
         P = P[np.isfinite(P[:, 2]) & (P[:, 2] > 0.02) & (P[:, 2] < 0.30)]
         p = t.transform.translation
         P = P @ quat_to_mat(t.transform.rotation).T + np.array([p.x, p.y, p.z])
-        # |x| < 1.5 cm: 놓을 때 '물체 폭 + 3 cm' 만 열므로 손가락이 ±1.5 cm 바깥에 온다(가장 작은 물체 기준)
-        n = int(np.count_nonzero((np.abs(P[:, 0]) < 0.015) & (np.abs(P[:, 1]) < 0.05) &
-                                 (P[:, 2] > -0.03) & (P[:, 2] < -0.003))) * step * step   # 솎아내기 전 점 수로 환산
+        n = int(np.count_nonzero((np.abs(P[:, 0]) < BETWEEN_X) & (np.abs(P[:, 1]) < BETWEEN_Y) &
+                                 (P[:, 2] > BETWEEN_Z[0]) & (P[:, 2] < BETWEEN_Z[1]))) * step * step  # 솎아내기 전 점 수로 환산
         self.pub_between.publish(Int32(data=n))
 
     @staticmethod
@@ -261,7 +271,7 @@ class ObjectDetector(Node):
         ② 그 범위를 양쪽으로 10 % 넓힌 창 밖의 점 = 튀는 점 → 버린다
         ③ 남은 점에 최소 외접 사각형(cv2.minAreaRect)
         ⚠ ①의 범위를 그대로 크기로 쓰면 원(디스크)은 가장자리 점이 적어 15~20 % 작게 나온다(가상 시험에서 확인).
-          ③을 전체 점에 바로 쓰면 튀는 점 몇 개에 크게 부푼다(실기: 누운 페트병 5.8 → 11.6 cm).
+          ③을 전체 점에 바로 쓰면 튀는 점 몇 개에 크게 부푼다(예: 누운 페트병 5.8 → 11.6 cm).
         반환: 중심(x, y), 폭(짧은 변), 길이(긴 변), 짧은 변 방향 단위벡터, 볼록 껍질 면적"""
         m = xy.mean(axis=0)
         d = xy - m
@@ -298,9 +308,9 @@ class ObjectDetector(Node):
             return None
 
         # 윗면 띠: 보통 1.5 cm. 키 큰 물체(세운 병)는 띠에 뚜껑 옆면이 섞여 중심이 카메라 쪽으로 끌린다
-        #   → 0.8 cm 로 좁힌다 (실기 16회차: 뚜껑 옆으로 빗나감)
+        #   → 0.8 cm 로 좁힌다 (넓으면 그리퍼가 뚜껑 옆으로 빗나간다)
         band = 0.015
-        if top >= 2.5 * max(outer, 1e-3):
+        if top >= TALL_RATIO * max(outer, 1e-3):
             band = 0.008
         top_pts = pts[h > top - band]
         if len(top_pts) < 20:
@@ -328,7 +338,7 @@ class ObjectDetector(Node):
         o.top_center = Point(x=float(cx), y=float(cy), z=table_z + top)
         o.width, o.length, o.height = width, max(length, width), top
         # 집을 수 있나: 윗면 폭 ≤ max_grip_width, 그리고 옆면까지 본 외곽 폭 ≤ 그리퍼 최대 벌림
-        #   (외곽 폭은 비스듬히 보인 옆면이 섞여 1~2 cm 크게 나온다 — 실기 사과: 윗면 8.2 · 외곽 9.7 cm)
+        #   (외곽 폭은 비스듬히 보인 옆면이 섞여 1~2 cm 크게 나온다 — 예: 사과 윗면 8.2 · 외곽 9.7 cm)
         o.graspable = width <= float(c["max_grip_width"]) and outer <= self.max_open
         if not o.graspable:
             o.note = (f"너무 넓음(윗면 {width * 100:.1f} cm > {float(c['max_grip_width']) * 100:.1f} cm)"
@@ -338,12 +348,13 @@ class ObjectDetector(Node):
 
     # ------------------------------------------------------------------ 발행
     def _publish(self, objects, stamp, rgb, mask, table_z=None):
+        """table_z=None: 테이블을 못 찾은 프레임(물체 0개 · 그림에 높이 표시 안 함)"""
         out = DetectedObjectArray()
         out.header.stamp = stamp
         out.header.frame_id = self.world
         out.objects = [o for o, _ in objects]
         self.pub.publish(out)
-        self.pub_mk.publish(object_markers(out.objects, self.world, table_z))
+        self.pub_mk.publish(object_markers(out.objects, self.world))
 
         # 디버그 그림: 컬러 영상 + 물체 마스크(초록) + 윤곽·이름 — 보는 사람이 있을 때만 그린다
         if self.pub_img.get_subscription_count() == 0:

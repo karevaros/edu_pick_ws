@@ -5,6 +5,8 @@
   <description>Pick and place 실습 — 물체 인식(깊이 기반) + 가상 카메라</description>
   <maintainer email="101551311+karevaros@users.noreply.github.com">edu_pick</maintainer>
   <license>Apache-2.0</license>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>edu_pick_msgs</exec_depend>
   <exec_depend>edu_pick_description</exec_depend>

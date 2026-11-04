@@ -3,7 +3,7 @@
 move_group 은 '계획(경로 찾기) + 실행(컨트롤러에 궤적 전달)'을 서비스·액션으로 제공하는 노드다.
 실습 노드(pick_place)는 아래를 호출한다:
     /compute_ik               (서비스)  목표 자세 → 관절값
-    /move_action              (액션)    관절 목표까지 충돌 없는 경로 계획 + 실행
+    /move_action              (액션)    관절 목표까지 충돌 없는 경로 계획 (pick_place 는 계획만 하고 아래로 실행)
     /compute_cartesian_path   (서비스)  손끝이 직선으로 움직이는 경로
     /execute_trajectory       (액션)    만든 궤적 실행
 """
@@ -17,7 +17,7 @@ from launch.substitutions import Command
 
 
 def moveit_params():
-    """move_group·RViz 가 함께 쓰는 MoveIt 파라미터 묶음."""
+    """move_group 에 넘기는 MoveIt 파라미터 묶음."""
     cfg = get_package_share_directory("edu_pick_moveit")
     desc = get_package_share_directory("edu_pick_description")
     y = lambda n: yaml.safe_load(open(os.path.join(cfg, "config", n)))

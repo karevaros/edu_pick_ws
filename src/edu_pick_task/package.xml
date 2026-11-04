@@ -5,6 +5,11 @@
   <description>Pick and place 실습 — 12단계 시나리오 노드</description>
   <maintainer email="101551311+karevaros@users.noreply.github.com">edu_pick</maintainer>
   <license>Apache-2.0</license>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>edu_pick_msgs</exec_depend>
   <exec_depend>edu_pick_description</exec_depend>

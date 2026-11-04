@@ -50,6 +50,9 @@ class FakeCamera(Node):
         with open(self.get_parameter("scene_file").value) as f:
             scene = yaml.safe_load(f)
         self.table_z = float(scene["table"]["top_z"])
+        g = scene["gripper"]
+        self.max_open = float(g["max_open"])                          # 최대 벌림 [m]
+        self.tip_advance = float(g["tip_closed"]) - float(g["tip_open"])   # 닫히며 손끝이 나오는 거리 [m]
         tc, ts = scene["table"]["center_xy"], scene["table"]["size_xy"]
         self.table_box = (tc[0] - ts[0] / 2, tc[0] + ts[0] / 2, tc[1] - ts[1] / 2, tc[1] + ts[1] / 2)
 
@@ -62,7 +65,7 @@ class FakeCamera(Node):
             else:
                 d["r"], d["h"] = float(o["size"][0]) / 2, float(o["size"][1])
             self.objs.append(d)
-        self.held = None          # (물체, 손끝 기준 오프셋)
+        self.held = None          # (물체, 손끝 기준 위치 오프셋, 손끝 기준 방향 오프셋)
         self.finger = None
 
         self.tf = Buffer()
@@ -129,7 +132,7 @@ class FakeCamera(Node):
             top = o["z0"] + o["h"]
             half = o.get("r", None) or min(o["sx"], o["sy"]) / 2
             # RG2 는 닫을수록 손끝이 앞(아래)으로 나온다 — 실측 20.5 cm(10 cm 벌림) → 24 cm(닫힘), 직선 근사
-            advance = 0.035 * (1.0 - min(2 * half / 0.10, 1.0))
+            advance = self.tip_advance * (1.0 - min(2 * half / self.max_open, 1.0))
             tip_closed = p[2] - advance
             if math.hypot(dx, dy) > max(0.02, half * 0.6) or not (o["z0"] - 0.01 < tip_closed < top - 0.005):
                 continue
@@ -140,7 +143,7 @@ class FakeCamera(Node):
                 if math.degrees(ang) > 20:
                     self.get_logger().warn(f"[가상] {o['id']}: 그리퍼 방향이 짧은 변과 {math.degrees(ang):.0f}° 어긋나 미끄러짐")
                     return
-                if min(o["sx"], o["sy"]) > 0.11:
+                if min(o["sx"], o["sy"]) > self.max_open:
                     self.get_logger().warn(f"[가상] {o['id']}: 너무 커서 손가락 사이에 안 들어감")
                     return
             tip_yaw = math.atan2(R[1, 0], R[0, 0])

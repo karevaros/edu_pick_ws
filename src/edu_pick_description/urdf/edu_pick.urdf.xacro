@@ -105,7 +105,7 @@
     <collision><geometry><box size="0.023 0.042 0.042"/></geometry></collision>
   </link>
   <!-- 카메라 기준 = 툴 플랜지(축 방향은 그리퍼 몸체와 같게 돌린 프레임 flange_hand).
-       2026-11-03 실기: 카메라로 잰 테이블 높이 -0.091 m ↔ 실측 받침 -0.085 m (6 mm 차) -->
+       확인: 카메라로 잰 테이블 높이 -0.091 m ↔ 실측 -0.085 m (6 mm 차) -->
   <link name="flange_hand"/>
   <joint name="flange_hand_joint" type="fixed">
     <parent link="tcp"/>

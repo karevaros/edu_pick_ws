@@ -22,24 +22,30 @@
     (모델 관절 상한은 1.18 이지만 실기 100 % 는 0.6 rad 에 해당 — 카메라 영상으로 확인)
 
 ■ ⚠ '잡혔는지'는 알 수 없다
-  제어박스가 명령을 '접수'했다는 응답만 온다. 그래서 settle_sec 만큼 기다린 뒤 성공으로 본다.
-  실제로 잡았는지는 실습 노드가 카메라로 다시 확인한다.
+  제어박스가 명령을 '접수'했다는 응답만 온다. 그래서 손가락 이동 거리에 비례해 기다린 뒤
+  (settle_base + 이동 거리 / speed_mps) 성공으로 본다. 실제로 잡았는지는 실습 노드가 카메라로 확인한다.
+
+■ 초기화
+  RG2 는 첫 구동 전에 초기화 명령이 필요하고, 초기화가 끝나기 전에 온 명령은 무시된다.
+  그래서 시작하자마자 초기화 → init_wait 기다림 → 100 % 열기를 해 둔다(init_on_start).
 
 ■ dry_run:=true (가짜 하드웨어 모드)
   명령을 보내지 않고 로그만 남긴다. 손가락 관절 상태는 그대로 바뀌므로 RViz 에서 움직임이 보인다.
 """
+import threading
+import time
+
 import rclpy
 from rclpy.action import ActionServer
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+
 from control_msgs.action import FollowJointTrajectory
 from sensor_msgs.msg import JointState
-import threading
-import time
 
 try:
-    from rbpodo_msgs.srv import Eval
+    from rbpodo_msgs.srv import Eval      # 레인보우 드라이버 (dry_run 에서는 없어도 된다)
 except ImportError:
     Eval = None
 
@@ -49,24 +55,27 @@ JOINT, MIMIC = "rg2_finger_joint1", "rg2_finger_joint2"
 class GripperAdapter(Node):
     def __init__(self):
         super().__init__("gripper_adapter")
+        # launch 가 scene.yaml 의 gripper 값을 넘긴다. 아래 기본값은 scene.yaml 과 같게 맞춰 둔다.
         self.declare_parameter("dry_run", False)
         self.declare_parameter("eval_service", "/rbpodo_hardware/eval")
         self.declare_parameter("joint_closed", 0.0)     # 0 %
-        self.declare_parameter("joint_open", 0.6)       # 100 %
-        self.declare_parameter("force_pct", 40)         # 힘 [%] — launch 가 scene.yaml gripper.force_pct 를 넘긴다
-        self.declare_parameter("settle_sec", 1.5)       # 명령 후 기다리는 시간 (speed_mps 가 0 일 때만 고정값으로 씀)
-        # 이동 거리에 비례한 대기: settle_base + 이동 거리 / speed_mps  (물체에 닿으면 더 일찍 멈추므로 보수적)
-        self.declare_parameter("settle_base", 0.4)
-        self.declare_parameter("speed_mps", 0.0)        # 0 = 고정 settle_sec
+        self.declare_parameter("joint_open", 0.6)       # 100 % (pick_place.GRIPPER_OPEN 과 같은 값)
+        self.declare_parameter("force_pct", 60)         # 힘 [%]
+        self.declare_parameter("settle_base", 0.4)      # 명령 뒤 대기 = settle_base + 이동 거리 / speed_mps [s]
+        self.declare_parameter("speed_mps", 0.08)       # 손가락 속도 가정값 [m/s]
+        self.declare_parameter("settle_sec", 2.5)       # speed_mps 가 0 일 때의 고정 대기 [s]
         self.declare_parameter("stroke_m", 0.10)        # 0 ~ 100 % 의 손가락 벌림 [m]
         self.declare_parameter("cmd_move", "gripper_macro 12,0,1,0,{ratio_pct:.0f},{force_pct},0,0,0,0")
         self.declare_parameter("cmd_init", "gripper_macro 12,0,0,0,0,0,0,0,0,0")   # 빈 값이면 보내지 않음
+        self.declare_parameter("init_wait", 3.0)        # 초기화 뒤 기다리는 시간 [s]
+        self.declare_parameter("init_on_start", True)   # false = 시작할 때 초기화·열기를 하지 않음(물체를 쥔 채 재접속할 때)
 
         g = lambda n: self.get_parameter(n).value
         self.dry = bool(g("dry_run"))
         self.j_closed, self.j_open = float(g("joint_closed")), float(g("joint_open"))
         self._pos = self.j_open
         self._initialized = False
+        self._init_lock = threading.Lock()
         self._cb = ReentrantCallbackGroup()
 
         self._cli = None
@@ -79,26 +88,33 @@ class GripperAdapter(Node):
         self.create_timer(1 / 30, self._pub_js)
         ActionServer(self, FollowJointTrajectory, "follow_joint_trajectory", self._on_goal,
                      callback_group=self._cb)
-        self.declare_parameter("init_wait", 3.0)        # 초기화 뒤 기다리는 시간 [s]
-        self.declare_parameter("init_on_start", True)   # false = 시작할 때 초기화·열기를 하지 않음(물체를 쥔 채 재접속할 때)
-        # 실기: 시작하자마자 초기화해 둔다. 첫 집기 직전에 초기화하면 끝나기 전에 명령이 와서
-        #   그리퍼가 움직이지 않았다(2026-11-04 실기, 사과). 초기화 → 기다림 → 100 % 열기.
-        if not self.dry and self.get_parameter("init_on_start").value:
+        if not self.dry and g("init_on_start"):
             threading.Thread(target=self._startup_init, daemon=True).start()
         self.get_logger().info("그리퍼 어댑터 시작" + ("  [dry_run: 명령을 보내지 않음]" if self.dry else ""))
 
-    def _startup_init(self):
-        init = self.get_parameter("cmd_init").value
-        if not init or not self._cli.wait_for_service(timeout_sec=60.0):
-            return
-        time.sleep(2.0)                                   # 팔 하드웨어가 자리 잡을 시간
-        if self._send(init):
+    def _ensure_init(self):
+        """초기화를 한 번만 한다(시작 스레드와 첫 목표가 겹쳐도 한 번). 성공하면 True."""
+        with self._init_lock:
+            if self._initialized or not self.get_parameter("cmd_init").value:
+                return True
+            if not self._send(self.get_parameter("cmd_init").value):
+                return False
             time.sleep(float(self.get_parameter("init_wait").value))
             self._initialized = True
-            self._send(self.get_parameter("cmd_move").value.format(
-                ratio_pct=100.0, force_pct=int(self.get_parameter("force_pct").value)))
+            return True
+
+    def _startup_init(self):
+        if not self._cli.wait_for_service(timeout_sec=60.0):
+            self.get_logger().warn("제어박스 eval 서비스가 60초 안에 뜨지 않아 시작 초기화를 건너뜀 — 첫 명령 때 초기화")
+            return
+        time.sleep(2.0)                                   # 팔 하드웨어가 자리 잡을 시간
+        if self._ensure_init() and self._send(self._move_cmd(1.0)):
             self._pos = self.j_open
             self.get_logger().info("그리퍼 초기화 완료 → 100 % 열림")
+
+    def _move_cmd(self, ratio):
+        return self.get_parameter("cmd_move").value.format(
+            ratio_pct=ratio * 100.0, force_pct=int(self.get_parameter("force_pct").value))
 
     def _ratio(self, pos):
         r = (pos - self.j_closed) / (self.j_open - self.j_closed)
@@ -132,20 +148,10 @@ class GripperAdapter(Node):
             result.error_code = FollowJointTrajectory.Result.INVALID_JOINTS
             return result
         target = float(traj.points[-1].positions[traj.joint_names.index(JOINT)])
-        # 첫 구동 전에 초기화 명령을 한 번 (펜던트 스크립트와 같은 순서)
-        init = self.get_parameter("cmd_init").value
-        if init and not self._initialized:
-            if not self._send(init):
-                gh.abort()
-                result.error_code = FollowJointTrajectory.Result.PATH_TOLERANCE_VIOLATED
-                return result
-            time.sleep(float(self.get_parameter("init_wait").value))
-            self._initialized = True
-        script = self.get_parameter("cmd_move").value.format(
-            ratio_pct=self._ratio(target) * 100.0, force_pct=int(self.get_parameter("force_pct").value))
-        if not self._send(script):
+        if not (self._ensure_init() and self._send(self._move_cmd(self._ratio(target)))):
             gh.abort()
-            result.error_code = FollowJointTrajectory.Result.PATH_TOLERANCE_VIOLATED
+            result.error_code = FollowJointTrajectory.Result.INVALID_GOAL
+            result.error_string = "제어박스가 그리퍼 명령을 받지 않음"
             return result
         speed = float(self.get_parameter("speed_mps").value)
         if speed > 0:

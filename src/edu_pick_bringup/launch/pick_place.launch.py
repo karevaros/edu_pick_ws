@@ -23,6 +23,7 @@ import os
 import socket
 import subprocess
 
+import yaml
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
@@ -71,7 +72,8 @@ def _inject_hw_params(urdf, values):
     """레인보우 하드웨어 블록에 패치 파라미터를 넣는다.
     패치 안 된 드라이버는 모르는 파라미터를 **조용히 무시**하므로 설치본에 패치가 있는지 먼저 본다."""
     lib = os.path.join(get_package_prefix("rbpodo_hardware"), "lib", "librbpodo_hardware.so")
-    blob = open(lib, "rb").read()
+    with open(lib, "rb") as f:
+        blob = f.read()
     tag = "<plugin>rbpodo_hardware/RBPodoHardwareInterface</plugin>"
     extra = ""
     for name, raw in values.items():
@@ -87,9 +89,18 @@ def _inject_hw_params(urdf, values):
 
 
 def _scene(desc):
-    import yaml
     with open(os.path.join(desc, "config", "scene.yaml")) as f:
         return yaml.safe_load(f)
+
+
+def _read(path):
+    with open(path) as f:
+        return f.read()
+
+
+def _on(value):
+    """launch 인자 문자열 → bool"""
+    return value.lower() in ("true", "1")
 
 
 def _setup(context):
@@ -98,7 +109,7 @@ def _setup(context):
     if mode not in ("sim", "real"):
         raise RuntimeError("mode 는 sim 또는 real 입니다.")
     real = mode == "real"
-    cb_sim = a("cb_simulation").lower() in ("true", "1")
+    cb_sim = _on(a("cb_simulation"))
     desc = get_package_share_directory("edu_pick_description")
     bringup = get_package_share_directory("edu_pick_bringup")
 
@@ -119,7 +130,8 @@ def _setup(context):
 
     # 그리퍼: Simulation 모드에서도 제어박스가 그리퍼 명령은 실행할 수 있어(확인 안 됨) 기본은 '보내지 않음'
     g = a("gripper_dry_run").lower()
-    dry = (not real or cb_sim) if g == "auto" else g in ("true", "1")
+    dry = (not real or cb_sim) if g == "auto" else _on(g)
+    grip = _scene(desc)["gripper"]
     print(f"[pick_place] 그리퍼 명령 = {'보내지 않음(dry_run)' if dry else '실제로 보냄'}")
 
     nodes = [
@@ -134,17 +146,15 @@ def _setup(context):
         Node(package="controller_manager", executable="spawner", arguments=["arm_controller"]),
         Node(package="edu_pick_bringup", executable="gripper_adapter.py", name="gripper_adapter",
              namespace="gripper_controller", output="screen",
-             parameters=[{"dry_run": dry, "force_pct": int(_scene(desc)["gripper"].get("force_pct", 40)),
-                          "settle_sec": 2.5,
-                          "settle_base": float(_scene(desc)["gripper"].get("settle_base", 0.4)),
-                          "speed_mps": float(_scene(desc)["gripper"].get("speed_mps", 0.0)),
-                          "stroke_m": float(_scene(desc)["gripper"].get("max_open", 0.10)),
-                          "init_on_start": a("gripper_init").lower() in ("true", "1")}]),
+             parameters=[{"dry_run": dry, "force_pct": int(grip["force_pct"]),
+                          "settle_base": float(grip["settle_base"]), "speed_mps": float(grip["speed_mps"]),
+                          "settle_sec": float(grip["settle_sec"]), "stroke_m": float(grip["max_open"]),
+                          "init_on_start": _on(a("gripper_init"))}]),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory("edu_pick_moveit"), "launch", "move_group.launch.py"))),
         Node(package="edu_pick_perception", executable="object_detector", output="screen"),
     ]
-    use_cam = a("camera").lower() in ("true", "1")
+    use_cam = _on(a("camera"))
     if real and not use_cam:
         print("[pick_place] 카메라 끔(camera:=false) — 인식 결과가 나오지 않습니다")
     if real and use_cam:
@@ -161,8 +171,8 @@ def _setup(context):
             launch_arguments=rs.items()))
     elif not real:
         nodes.append(Node(package="edu_pick_perception", executable="fake_camera", output="screen"))
-    if a("rviz").lower() in ("true", "1"):
-        srdf = open(os.path.join(get_package_share_directory("edu_pick_moveit"), "config", "edu_pick.srdf")).read()
+    if _on(a("rviz")):
+        srdf = _read(os.path.join(get_package_share_directory("edu_pick_moveit"), "config", "edu_pick.srdf"))
         nodes.append(Node(package="rviz2", executable="rviz2", output="log",
                           arguments=["-d", os.path.join(bringup, "config", "pick_place.rviz")],
                           parameters=[{"robot_description": urdf, "robot_description_semantic": srdf}]))
@@ -176,7 +186,8 @@ def generate_launch_description():
         DeclareLaunchArgument("cb_simulation", default_value="true",
                               description="true = 제어박스 Simulation 모드(팔 안 움직임) / false = 🔴 실제 구동"),
         DeclareLaunchArgument("servo_t2", default_value="", description="무선 연결이면 0.1 (유선은 비워 둠)"),
-        DeclareLaunchArgument("speed_bar", default_value="0.2"),
+        DeclareLaunchArgument("speed_bar", default_value="0.2",
+                              description="제어박스 속도바(0~1) — 펜던트 동작용. 이 실습의 서보 궤적에는 영향 없음"),
         DeclareLaunchArgument("max_joint_velocity", default_value="0.8",
                               description="관절 속도 상한[rad/s] — 이보다 빠른 명령은 하드웨어에서 잘린다"),
         DeclareLaunchArgument("gripper_dry_run", default_value="auto",

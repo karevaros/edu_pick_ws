@@ -20,7 +20,7 @@ import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.signals import SignalHandlerOptions
 
-from edu_pick_task.pick_place import ARM_JOINTS, PickPlace, StepFailed
+from edu_pick_task.pick_place import ARM_JOINTS, GRIPPER_OPEN, PickPlace, StepFailed
 
 MAX_JOG_DEG = 30.0
 
@@ -53,7 +53,6 @@ def main():
         if args.show:
             return
         if args.grip is not None:
-            from edu_pick_task.pick_place import GRIPPER_OPEN
             pct = min(100.0, max(0.0, args.grip))
             print(f"그리퍼 벌림 {pct:.0f} %")
             node.gripper(GRIPPER_OPEN * pct / 100.0, f"그리퍼 {pct:.0f}%")

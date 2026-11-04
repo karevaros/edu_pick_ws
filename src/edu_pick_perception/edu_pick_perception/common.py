@@ -20,7 +20,7 @@ def quat_to_mat(q):
         [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
 
 
-def object_markers(objects, frame, table_z=None, ns="detected"):
+def object_markers(objects, frame, ns="detected"):
     """DetectedObject 목록 → RViz 마커(초록 = 집을 수 있음 / 빨강 = 너무 큼)."""
     ma = MarkerArray()
     clear = Marker()

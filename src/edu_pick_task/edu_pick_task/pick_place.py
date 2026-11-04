@@ -18,9 +18,10 @@
    8 하역 위 이동  손끝 목표 자세 → IK → 관절 목표
    9 하강          손끝 직선 이동
   10 놓기          그리퍼 열기
-  11 상승          손끝 직선 이동
-  12 초기위치      (다음 물체가 있으면 2 대기위치로)
-  + 결과 확인      대기위치에서 다시 찍어, 집은 물체가 원래 자리에서 사라졌는지 본다
+  11 상승          손끝 직선 이동 (조금 들었을 때 손가락 사이가 비었는지 카메라로 확인)
+  11+ 결과 확인    대기위치에서 다시 찍어, 집은 물체가 원래 자리에서 사라졌는지 본다
+      → --count 로 여러 개를 옮기면 2 부터 반복
+  12 초기위치      모두 끝난 뒤 한 번
 
 ■ 이 노드가 쓰는 ROS 인터페이스 (전부 MoveIt move_group 이 제공)
    /compute_ik  /move_action  /compute_cartesian_path  /execute_trajectory
@@ -44,29 +45,33 @@ import time
 import numpy as np
 import rclpy
 import yaml
+from ament_index_python.packages import get_package_share_directory
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
 
+from action_msgs.srv import CancelGoal
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose, Quaternion
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
-from moveit_msgs.msg import Constraints, JointConstraint, MoveItErrorCodes, RobotState, RobotTrajectory
-from moveit_msgs.msg import AttachedCollisionObject, CollisionObject, PlanningScene
+from moveit_msgs.msg import (AttachedCollisionObject, CollisionObject, Constraints, DisplayTrajectory,
+                             JointConstraint, MoveItErrorCodes, PlanningScene, RobotState, RobotTrajectory)
 from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath, GetPositionIK
-from shape_msgs.msg import SolidPrimitive
 from sensor_msgs.msg import JointState
+from shape_msgs.msg import SolidPrimitive
+from std_msgs.msg import Int32, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from edu_pick_msgs.msg import DetectedObjectArray
-from std_msgs.msg import Int32, String
 
 ARM_JOINTS = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
 GROUP, TIP, WORLD = "arm", "tool_tip", "world"
-GRIPPER_OPEN, GRIPPER_CLOSED = 0.6, 0.0          # rg2_finger_joint1 [rad] (100 % / 0 %) — 물리적 끝값
+GRIPPER_OPEN = 0.6        # rg2_finger_joint1 [rad] = 100 % 벌림 (0 = 닫힘) — gripper_adapter 의 joint_open 과 같은 값
+EARLIER_PLACED_SIZE = (0.07, 0.12)   # 앞 실행에서 놓은 물체(크기 모름) — 넉넉히 지름 7 cm · 높이 12 cm 로 본다
 
 
 class StepFailed(Exception):
@@ -92,16 +97,15 @@ def down_quat(yaw):
 class PickPlace(Node):
     def __init__(self, step_mode=False, shape=None):
         super().__init__("pick_place")
-        from ament_index_python.packages import get_package_share_directory
-        import os
         self.declare_parameter("scene_file", os.path.join(
             get_package_share_directory("edu_pick_description"), "config", "scene.yaml"))
         with open(self.get_parameter("scene_file").value) as f:
             self.scene = yaml.safe_load(f)
-        self.m = self.scene["motion"]
-        g = self.scene["gripper"]
-        # '열기' 벌림 (scene.yaml gripper.open_pct). '잡기'는 물체마다 close_target() 으로 정한다
-        self.grip_open = GRIPPER_OPEN * float(g.get("open_pct", 100)) / 100.0
+        self.m = self.scene["motion"]          # 이동 설정
+        self.g = self.scene["gripper"]         # 그리퍼 실측·설정
+        self.rules = self.scene["grasp_rules"] # 물체별 잡는 법
+        # '열기' 벌림. '잡기'는 물체마다 close_target() 으로 정한다
+        self.grip_open = GRIPPER_OPEN * float(self.g["open_pct"]) / 100.0
         self.table_z = float(self.scene["table"]["top_z"])
         self.step_mode = step_mode
         self.shape_filter = shape        # None = 모양 무관 / "round" / "box"
@@ -132,9 +136,7 @@ class PickPlace(Node):
         self.exe = ActionClient(self, ExecuteTrajectory, "/execute_trajectory")
         self.grip = ActionClient(self, FollowJointTrajectory, "/gripper_controller/follow_joint_trajectory")
         # 정지용 (cancel_motion)
-        from action_msgs.srv import CancelGoal
         self.stop_pub = self.create_publisher(String, "/trajectory_execution_event", 10)
-        from moveit_msgs.msg import DisplayTrajectory
         self.display_pub = self.create_publisher(DisplayTrajectory, "/display_planned_path", 10)
         self.ctrl_cancel = self.create_client(CancelGoal, "/arm_controller/follow_joint_trajectory/_action/cancel_goal")
 
@@ -232,11 +234,11 @@ class PickPlace(Node):
             time.sleep(0.01)
         return fut.result()
 
-    def run_action(self, client, goal, timeout, what):
+    def run_action(self, client, goal, timeout, what, category):
+        """액션 목표를 보내고 결과를 기다린다. 걸린 시간은 category(경로계획·로봇동작·그리퍼)로 기록."""
         if not client.wait_for_server(timeout_sec=5.0):
-            raise StepFailed(f"{what}: 액션 서버가 없습니다 ({client._action_name})")
-        cat = {id(self.move): "경로계획", id(self.exe): "로봇동작", id(self.grip): "그리퍼"}.get(id(client), "기타")
-        with self.timer(cat, what):
+            raise StepFailed(f"{what}: 액션 서버가 없습니다 — bringup 이 떠 있나요?")
+        with self.timer(category, what):
             return self._run_action(client, goal, timeout, what)
 
     def _run_action(self, client, goal, timeout, what):
@@ -258,7 +260,6 @@ class PickPlace(Node):
             ① /trajectory_execution_event 에 "stop"  — MoveIt 이 실행을 중단 (MoveGroupInterface.stop() 과 같은 방법)
             ② arm_controller 액션의 목표 전부 취소   — 컨트롤러가 직접 멈춤
           그리고 '응답'이 아니라 **관절값이 실제로 멈췄는지**로 확인한다."""
-        from action_msgs.srv import CancelGoal
         self.stop_pub.publish(String(data="stop"))
         req = CancelGoal.Request()                     # 빈 goal_info = 모든 목표 취소
         if self.ctrl_cancel.wait_for_service(timeout_sec=1.0):
@@ -298,7 +299,7 @@ class PickPlace(Node):
         r.num_planning_attempts = 5
         r.allowed_planning_time = 5.0
         r.max_velocity_scaling_factor = float(self.m["velocity_scaling"])
-        r.max_acceleration_scaling_factor = float(self.m["velocity_scaling"])
+        r.max_acceleration_scaling_factor = float(self.m["velocity_scaling"])   # 가속도도 같은 비율로
         r.start_state.is_diff = True
         c = Constraints()
         for n, v in zip(ARM_JOINTS, target):
@@ -308,7 +309,7 @@ class PickPlace(Node):
         goal.planning_options.plan_only = True          # ① 계획만 → ② 확인 → ③ 실행 (execute)
         # 계획은 무작위 탐색(RRTConnect)이라 가끔 실패하거나, 사후 검사에서 무효로 걸린다 → 최대 3번
         for attempt in range(1, 4):
-            res = self.run_action(self.move, goal, 60.0, what)
+            res = self.run_action(self.move, goal, 60.0, what, "경로계획")
             if res.error_code.val == MoveItErrorCodes.SUCCESS:
                 break
             self.say(f"   ⚠ {what}: 경로 계획 실패 (오류 코드 {res.error_code.val}) — 다시 계획 {attempt}/3")
@@ -318,14 +319,13 @@ class PickPlace(Node):
 
     def execute(self, traj, what):
         """계획된 궤적을 RViz 에 보여 주고(단계 모드면 확인을 받고) 실행한다."""
-        from moveit_msgs.msg import DisplayTrajectory
         jt = traj.joint_trajectory
         dur = jt.points[-1].time_from_start.sec + jt.points[-1].time_from_start.nanosec * 1e-9 if jt.points else 0.0
         self.display_pub.publish(DisplayTrajectory(trajectory_start=self.current_state(), trajectory=[traj]))
         self.confirm(f"경로 계획 완료 ({len(jt.points)}점, {dur:.1f}초) — RViz '계획된 경로'를 확인하세요")
         goal = ExecuteTrajectory.Goal()
         goal.trajectory = traj
-        res = self.run_action(self.exe, goal, dur * 2 + 30.0, what)
+        res = self.run_action(self.exe, goal, dur * 2 + 30.0, what, "로봇동작")
         if res.error_code.val != MoveItErrorCodes.SUCCESS:
             raise StepFailed(f"{what}: 실행 실패 (오류 코드 {res.error_code.val})")
 
@@ -353,7 +353,7 @@ class PickPlace(Node):
             q = np.array([js.position[js.name.index(j)] for j in ARM_JOINTS])
             cost = float(np.sum(np.abs(q - cur)))
             if best is None or cost < best[0]:
-                best = (cost, q, cand_yaw)
+                best = (cost, q)
         if best is None:
             raise StepFailed(f"IK 해 없음 — 손끝 ({pose.position.x:.3f}, {pose.position.y:.3f}, "
                              f"{pose.position.z:.3f}) 에 닿을 수 없거나 충돌")
@@ -401,12 +401,12 @@ class PickPlace(Node):
         if n < 2:
             return
         T = max(dist / float(self.m["linear_speed"]), 1.0)
+        vmax = float(self.m["linear_joint_max"])
         s = np.linspace(0.0, 1.0, n)
         for _ in range(20):
             t = T / math.pi * np.arccos(1 - 2 * s)          # s(t) = (1 - cos(πt/T)) / 2 의 역함수
             dt = np.diff(t)
             v = np.max(np.abs(np.diff(q, axis=0)) / np.maximum(dt[:, None], 1e-6))
-            vmax = float(self.m.get("linear_joint_max", 0.35))
             if v <= vmax:
                 break
             T *= v / vmax * 1.05
@@ -420,7 +420,7 @@ class PickPlace(Node):
         goal.trajectory = JointTrajectory(joint_names=["rg2_finger_joint1"],
                                           points=[JointTrajectoryPoint(positions=[pos],
                                                                        time_from_start=Duration(sec=1))])
-        res = self.run_action(self.grip, goal, 15.0, what)
+        res = self.run_action(self.grip, goal, 15.0, what, "그리퍼")
         if res.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
             raise StepFailed(f"{what}: 그리퍼 실패 (오류 코드 {res.error_code})")
 
@@ -479,7 +479,7 @@ class PickPlace(Node):
                                     touch_links=["rg2_leftfinger", "rg2_rightfinger", "rg2_hand", TIP])
         a.object.id, a.object.operation = "held_object", CollisionObject.ADD
         a.object.header.frame_id = TIP
-        # 여유 1.2 cm: 인식 길이가 실제보다 짧게 나올 수 있다(누운 병 17 cm ↔ 실제 약 20 cm)
+        # 여유 1.2 cm: 인식 길이가 실제보다 짧게 나올 수 있다(누운 병 인식 17 cm ↔ 실제 약 20 cm)
         a.object.primitives = [self._primitive(obj.shape, obj.width, obj.length, obj.height, 0.012)]
         p = Pose()
         p.position.z = -depth + obj.height / 2
@@ -513,13 +513,57 @@ class PickPlace(Node):
         except StepFailed:
             pass
 
-    def close_target(self, width, squeeze=None):
-        """잡기 목표 관절값: 물체 폭보다 close_squeeze 만큼 좁게 → 닿는 순간부터 설정한 힘으로 쥔다."""
-        g = self.scene["gripper"]
-        sq = float(g.get("close_squeeze", 0.015)) if squeeze is None else squeeze
-        w = max(0.0, width - sq)
-        pct = min(100.0, 100.0 * w / float(g["max_open"]))
+    def close_target(self, width, squeeze):
+        """잡기 목표 관절값: 물체 폭보다 squeeze 만큼 좁게 → 닿는 순간부터 설정한 힘으로 쥔다."""
+        pct = min(100.0, 100.0 * max(0.0, width - squeeze) / float(self.g["max_open"]))
         return GRIPPER_OPEN * pct / 100.0, pct
+
+    # ================================================================ 잡는 법 (물체 치수 → 깊이·조임)
+    def classify(self, obj):
+        """물체 종류를 '치수'로 가른다 (이름은 모른다). → "tall" / "lying" / "low" / "normal" """
+        r, w, h = self.rules, obj.width, obj.height
+        if h >= r["tall_ratio"] * w:
+            return "tall"                                    # 세운 병
+        if obj.shape == "box" and obj.length >= r["lying_length_ratio"] * w and h <= r["lying_height_ratio"] * w:
+            return "lying"                                   # 누운 병 (위에서 보면 길쭉한 박스)
+        if h < r["low_ratio"] * w:
+            return "low"                                     # 사과·공·납작한 박스
+        return "normal"                                      # 박스·캔
+
+    def plan_grasp(self, obj):
+        """잡는 손끝 높이·방향·조임 정하기.  반환 dict(kind, yaw, grip_z, advance, squeeze)
+
+        깊이 = 손끝이 물체 윗면보다 내려가는 거리
+          낮은 물체 = 가운데 높이(누운 원통을 축보다 위에서 잡으면 들 때 미끄러진다) · 그 밖 = grip_depth
+        🔴 RG2 안쪽 스위치: 물체 윗면이 palm_depth 보다 깊이 들어가면 스위치가 눌려 그리퍼가 멈춘다
+           → 깊이 상한 = palm_depth − palm_margin (키 큰 물체·누운 병은 더 얕게)"""
+        kind = self.classify(obj)
+        if math.isnan(obj.yaw):                     # 원형: 지금 손목 방향 그대로
+            q = self.tip_pose().orientation
+            yaw = 2 * math.atan2(q.y, q.x)
+        else:                                       # 박스: 짧은 변 방향으로 닫는다
+            yaw = obj.yaw
+        low = obj.height < self.rules["low_ratio"] * obj.width      # 낮으면(누운 병 포함) 가운데 높이
+        depth = obj.height * 0.5 if low else float(self.m["grip_depth"])
+        max_depth = float(self.g["palm_depth"]) - float(self.g["palm_margin"])
+        squeeze = float(self.g["close_squeeze"])
+        if kind == "tall":
+            max_depth = min(max_depth, float(self.rules["tall_max_insert"]))
+            self.say("   → 키 큰 물체 — " + (f"손 안으로 {max_depth * 100:.1f} cm 까지만" if max_depth >= 0 else
+                     f"윗면 {-max_depth * 100:.1f} cm 위에서 닫음(닫히며 손끝이 내려와 윗부분을 잡는다)"))
+        elif kind == "lying":
+            max_depth = min(max_depth, float(self.rules["lying_max_insert"]))
+            squeeze = float(self.rules["lying_squeeze"])
+            self.say(f"   → 누운 병으로 판단(길이 {obj.length * 100:.0f} cm · 폭 {obj.width * 100:.1f} cm) — "
+                     f"얕게 {max_depth * 100:.1f} cm · 덜 조임 {squeeze * 100:.0f} cm")
+        if depth > max_depth + 1e-4:
+            self.say(f"   → 잡는 깊이 {depth * 100:.1f} cm → {max_depth * 100:.1f} cm 로 제한 (그리퍼 안쪽 스위치)")
+            depth = max_depth
+        # RG2 는 닫을수록 손끝이 앞(아래)으로 나온다 — 실측 2점(10 cm 벌림 20.5 cm · 0 cm 24 cm) 사이 직선 근사.
+        # 물체 폭까지 닫혔을 때의 손끝도 테이블 위 min_tip_clearance 이상이어야 한다.
+        advance = (self.g["tip_closed"] - self.g["tip_open"]) * (1.0 - min(obj.width / self.g["max_open"], 1.0))
+        grip_z = max(obj.top_center.z - depth, self.table_z + float(self.m["min_tip_clearance"]) + advance)
+        return {"kind": kind, "yaw": yaw, "grip_z": grip_z, "advance": advance, "squeeze": squeeze}
 
     # ================================================================ 인식
     @timed("인식대기")
@@ -577,8 +621,9 @@ class PickPlace(Node):
         slots = all_slots[first_slot:]
         # 앞 칸에는 이전 실행에서 놓은 물체가 있다고 보고 장애물로 둔다 (카메라 인식 영역 밖이라 안 보인다)
         for i, (sx, sy) in enumerate(all_slots[:first_slot]):
+            d, h = EARLIER_PLACED_SIZE
             self.placed.append({"id": f"earlier_{i}", "shape": "round", "x": sx, "y": sy, "bottom": self.table_z,
-                                "width": 0.07, "length": 0.07, "height": 0.12, "yaw": float("nan")})
+                                "width": d, "length": d, "height": h, "yaw": float("nan")})
         m = self.m
 
         self.say("MoveIt·컨트롤러·관절 상태 기다리는 중 …")
@@ -613,45 +658,10 @@ class PickPlace(Node):
             if obj is None:
                 self.say("   → 집을 수 있는 물체가 없습니다. 종료합니다.")
                 break
-            t_pos = time.time()
-            yaw = 0.0 if math.isnan(obj.yaw) else obj.yaw
-            if math.isnan(obj.yaw):                 # 원형: 지금 손목 방향 그대로
-                q = self.tip_pose().orientation
-                yaw = 2 * math.atan2(q.y, q.x)
-            # 잡는 높이(손끝): 키 큰 물체는 윗면에서 grip_depth 아래.
-            # 낮은 물체(높이 < 폭×1.3 — 공·사과·누운 병·납작한 박스)는 가운데 높이:
-            #   누운 병을 축보다 위에서 잡으면 들 때 미끄러진다
-            low = obj.height < 1.3 * obj.width
-            depth = obj.height * 0.5 if low else float(m["grip_depth"])
-            # 🔴 RG2 안쪽 스위치: 물체 윗면이 손가락 끝에서 palm_depth 보다 깊이 들어가면 스위치가 눌려
-            #    그리퍼가 닫히지 않는다(실기에서 사과로 2번 확인) → 들어가는 깊이를 제한한다
-            gcfg = self.scene["gripper"]
-            max_depth = float(gcfg.get("palm_depth", 0.03)) - float(gcfg.get("palm_margin", 0.005))
-            # 누운 병(눌리는 물체): 얕게·덜 조여 잡는다 (찌그러져 안쪽 스위치를 누르지 않게)
-            lb = gcfg.get("lying_bottle")
-            lying = (lb is not None and obj.shape == "box" and obj.length >= 2.5 * obj.width
-                     and obj.height <= 1.5 * obj.width)
-            squeeze = float(lb["squeeze"]) if lying else None
-            if obj.height >= 2.5 * obj.width and "tall_max_insert" in gcfg:     # 세운 병 등 키 큰 물체
-                max_depth = min(max_depth, float(gcfg["tall_max_insert"]))
-                self.say(f"   → 키 큰 물체 — " + (f"손 안으로 {max_depth * 100:.1f} cm 까지만" if max_depth >= 0 else
-                         f"윗면 {-max_depth * 100:.1f} cm 위에서 닫음(닫히며 손끝이 내려와 윗부분을 잡는다)"))
-            if lying:
-                max_depth = min(max_depth, float(lb["max_insert"]))
-                self.say(f"   → 누운 병으로 판단(길이 {obj.length * 100:.0f} cm · 폭 {obj.width * 100:.1f} cm) — "
-                         f"얕게 {max_depth * 100:.1f} cm · 덜 조임 {squeeze * 100:.0f} cm")
-            if depth > max_depth + 1e-4:
-                self.say(f"   → 잡는 깊이 {depth * 100:.1f} cm → {max_depth * 100:.1f} cm 로 제한 (그리퍼 안쪽 스위치)")
-                depth = max_depth
-            grip_z = obj.top_center.z - depth
-            # RG2 는 닫을수록 손끝이 앞(아래)으로 나온다 — 실측 2점(10 cm 벌림 20.5 cm · 0 cm 24 cm) 사이 직선 근사.
-            # 물체 폭까지 닫혔을 때의 손끝도 테이블 위 min_tip_clearance 이상이어야 한다.
-            g = self.scene["gripper"]
-            advance = (g["tip_closed"] - g["tip_open"]) * (1.0 - min(obj.width / g["max_open"], 1.0))
-            grip_z = max(grip_z, self.table_z + float(m["min_tip_clearance"]) + advance)
+            with self.timer("위치계산", "잡는 높이·방향"):
+                gp = self.plan_grasp(obj)
+            yaw, grip_z, advance = gp["yaw"], gp["grip_z"], gp["advance"]
             above_z = obj.top_center.z + float(m["approach_height"])
-            self.timeline.append({"cycle": self.cur_cycle, "step": self.cur_step, "category": "위치계산",
-                                  "name": "잡는 높이·방향", "start": t_pos - self.t_start, "dur": time.time() - t_pos})
             self.say(f"   → 선택: {obj.id} ({obj.shape}) · 집기 방향 {math.degrees(yaw):.0f}° · "
                      f"손끝 높이 {grip_z:.3f} m (닫으면 {advance * 100:.1f} cm 더 내려감 → 테이블 위 "
                      f"{(grip_z - advance - self.table_z) * 100:.1f} cm)")
@@ -663,7 +673,7 @@ class PickPlace(Node):
             self.step(5, f"하강 {(above_z - grip_z) * 100:.1f} cm")
             self.move_linear(grip_z - above_z, "하강")
 
-            close_pos, close_pct = self.close_target(obj.width, squeeze)
+            close_pos, close_pct = self.close_target(obj.width, gp["squeeze"])
             self.step(6, f"잡기 (물체 폭 {obj.width * 100:.1f} cm → 그리퍼 목표 {close_pct:.0f} %)")
             self.gripper(close_pos, "잡기")
             self.attach_held(obj, obj.top_center.z - grip_z)
@@ -672,8 +682,8 @@ class PickPlace(Node):
             self.move_linear(above_z - grip_z, "상승")
 
             # 놓을 때 손끝 높이 = 잡을 때 손끝이 물체 바닥에서 떨어진 높이 + 여유
-            tall = obj.height >= 2.5 * obj.width
-            gap = float(m.get("release_gap_tall", m["release_gap"])) if tall else float(m["release_gap"])
+            tall = gp["kind"] == "tall"
+            gap = float(m["release_gap_tall"] if tall else m["release_gap"])
             release_z = self.table_z + (grip_z - (obj.top_center.z - obj.height)) + gap
             if tall:
                 self.say(f"   → 키 큰 물체(높이 {obj.height * 100:.0f} cm · 폭 {obj.width * 100:.1f} cm) — 테이블 위 {gap * 100:.0f} cm 에서 놓음")
@@ -689,18 +699,18 @@ class PickPlace(Node):
             self.move_linear(release_z - place_above, "하강")
 
             # 놓을 때는 물체 폭 + release_margin 만큼만 연다 (옆 칸 물체를 손가락으로 치지 않게)
-            g = self.scene["gripper"]
-            rel_pct = min(float(g.get("open_pct", 100)),
-                          100.0 * (obj.width + float(g.get("release_margin", 0.03))) / float(g["max_open"]))
+            rel_pct = min(float(self.g["open_pct"]),
+                          100.0 * (obj.width + float(self.g["release_margin"])) / float(self.g["max_open"]))
             self.step(10, f"놓기 (그리퍼 {rel_pct:.0f} % 까지만 열기)")
             self.gripper(GRIPPER_OPEN * rel_pct / 100.0, "놓기")
             self.detach_held()
 
-            # 놓기 확인: 3 cm 들고(손 안 깊이 최대 2.5 cm 보다 높게) 손가락 사이를 본다. RG2 는 열렸는지 알려 주지 않는다
-            #   (실기: 열기 명령이 접수됐는데 안 열려 병을 쥔 채 돌아온 적이 있다 → 다시 열기)
-            self.step(11, "상승 (3 cm 들고 놓였는지 확인)")
-            self.move_linear(0.03, "상승")
-            thr = int(self.scene["gripper"].get("held_points", 400))
+            # 놓기 확인: 조금 들고 손가락 사이를 본다. RG2 는 열렸는지 알려 주지 않는다
+            #   (열기 명령이 접수됐는데 안 열려 물체를 쥔 채 돌아올 수 있다 → 다시 연다)
+            lift = float(m["check_lift"])
+            self.step(11, f"상승 ({lift * 100:.0f} cm 들고 놓였는지 확인)")
+            self.move_linear(lift, "상승")
+            thr = int(self.g["held_points"])
             for retry in range(3):
                 n = self.held_points()
                 if n is None or n < thr:
@@ -710,7 +720,7 @@ class PickPlace(Node):
                     raise StepFailed(f"놓기 실패 — 그리퍼를 다시 열어도 물체가 손에 남아 있습니다(점 {n}개). 사람이 확인하세요")
                 self.say(f"   ✕ 물체가 아직 손에 있음(점 {n}개) — 열기 다시 {retry + 1}/2")
                 self.gripper(self.grip_open, "다시 열기")
-            self.move_linear(place_above - release_z - 0.03, "상승")
+            self.move_linear(place_above - release_z - lift, "상승")
             # 놓은 물체는 손이 빠져나온 '뒤에' 장애물로 등록한다(손가락이 둘러싼 채로 넣으면 시작부터 충돌)
             it = self.as_item(obj, oid=f"placed_{first_slot + k}")
             it.update(x=place_xy[0], y=place_xy[1], bottom=self.table_z)
@@ -744,7 +754,6 @@ def main():
     args, ros_args = ap.parse_known_args()
 
     # Ctrl+C 를 rclpy 가 가로채면 통신이 먼저 끊겨 '정지 명령'을 못 보낸다 → 직접 처리
-    from rclpy.signals import SignalHandlerOptions
     rclpy.init(args=[sys.argv[0]] + ros_args, signal_handler_options=SignalHandlerOptions.NO)
     node = PickPlace(step_mode=args.step, shape=args.shape)
     ex = MultiThreadedExecutor()

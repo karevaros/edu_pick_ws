@@ -2,8 +2,8 @@
 """[강사용 도구] URDF → SRDF 생성 (플래닝 그룹 + ACM 자동 산출).
 
 MoveIt Setup Assistant 의 collision matrix 계산을 스크립트로 재현한다.
-GUI 대신 스크립트인 이유: 통합 URDF 가 mounts.yaml(조립기)로 바뀌므로
-모델을 갈아끼울 때마다 재생성해야 한다. GUI 1회 산출물은 곧 낡는다.
+GUI 대신 스크립트인 이유: scene.yaml(그리퍼·카메라 장착)이나 URDF 를 바꾸면
+다시 만들어야 하는데, 명령 한 줄로 되풀이할 수 있다.
 
 ACM 분류(Setup Assistant 와 동일 규칙):
   Adjacent  : 관절로 직접 연결된 링크쌍 → 항상 접촉, 무시
