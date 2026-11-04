@@ -180,8 +180,8 @@ class ObjectDetector(Node):
 
     def _count_between_fingers(self, msg):
         """손끝(tool_tip) 좌표에서 두 손가락 사이 공간의 점 개수.
-        tool_tip: z = 접근(아래) 방향 · x = 손가락이 닫히는 방향. 100 % 열면 손가락은 x ≈ ±5 cm 에 있다
-        → |x| < 3.5 cm · |y| < 5 cm · 손끝 위 0.3~3 cm 상자 안의 점 = 손에 남은 물체
+        tool_tip: z = 접근(아래) 방향 · x = 손가락이 닫히는 방향
+        → 가운데 기둥 |x| < 1.5 cm · |y| < 5 cm · 손끝 위 0.3~3 cm 안의 점 = 손에 남은 물체
         (손끝 아래는 보지 않는다 — 막 놓은 물체가 아직 바로 밑에 있다)"""
         try:
             t = self.tf.lookup_transform("tool_tip", msg.header.frame_id, Time.from_msg(msg.header.stamp))
@@ -192,7 +192,8 @@ class ObjectDetector(Node):
         P = P[np.isfinite(P[:, 2])]
         p = t.transform.translation
         P = P @ quat_to_mat(t.transform.rotation).T + np.array([p.x, p.y, p.z])
-        n = int(np.count_nonzero((np.abs(P[:, 0]) < 0.035) & (np.abs(P[:, 1]) < 0.05) &
+        # |x| < 1.5 cm: 놓을 때 '물체 폭 + 3 cm' 만 열므로 손가락이 ±1.5 cm 바깥에 온다(가장 작은 물체 기준)
+        n = int(np.count_nonzero((np.abs(P[:, 0]) < 0.015) & (np.abs(P[:, 1]) < 0.05) &
                                  (P[:, 2] > -0.03) & (P[:, 2] < -0.003)))
         self.pub_between.publish(Int32(data=n))
 

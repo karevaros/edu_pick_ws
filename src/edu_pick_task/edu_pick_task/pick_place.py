@@ -573,8 +573,12 @@ class PickPlace(Node):
             self.step(9, f"하강 {(place_above - release_z) * 100:.1f} cm")
             self.move_linear(release_z - place_above, "하강")
 
-            self.step(10, "놓기")
-            self.gripper(self.grip_open, "놓기")
+            # 놓을 때는 물체 폭 + release_margin 만큼만 연다 (옆 칸 물체를 손가락으로 치지 않게)
+            g = self.scene["gripper"]
+            rel_pct = min(float(g.get("open_pct", 100)),
+                          100.0 * (obj.width + float(g.get("release_margin", 0.03))) / float(g["max_open"]))
+            self.step(10, f"놓기 (그리퍼 {rel_pct:.0f} % 까지만 열기)")
+            self.gripper(GRIPPER_OPEN * rel_pct / 100.0, "놓기")
             self.detach_held()
 
             # 놓기 확인: 3 cm 들고(손 안 깊이 최대 2.5 cm 보다 높게) 손가락 사이를 본다. RG2 는 열렸는지 알려 주지 않는다
