@@ -209,8 +209,22 @@ class ObjectDetector(Node):
                 o.note = "가장자리에 잘림"
             if o.width < float(c.get("min_width", 0.0)):     # 케이블처럼 가는 것은 물체가 아니다
                 continue
-            o.id = f"obj_{len(objects)}"
             objects.append((o, cnt))
+
+        # 한 물체가 여러 덩어리로 갈라진 것 합치기: 투명 PET 몸통은 깊이가 듬성듬성해서
+        #   세운 병이 '뚜껑'과 '몸통 조각'으로 나뉘어 잡혔다(실기 18회차 — 몸통 조각을 집으려다 뚜껑 덩어리에 막힘).
+        #   중심이 다른(더 높은) 덩어리의 외곽 반경 안이면 같은 물체 → 더 높은 덩어리 하나로 남긴다
+        objects.sort(key=lambda oc: -oc[0].height)
+        merged = []
+        for o, cnt in objects:
+            host = next((h for h in merged if math.hypot(o.top_center.x - h[0].top_center.x,
+                                                         o.top_center.y - h[0].top_center.y)
+                         < 0.5 * max(h[0].width, o.width) + 0.01), None)   # 폭 기준(길이면 누운 병 옆 물체까지 삼킨다)
+            if host is None:
+                merged.append((o, cnt))
+        objects = merged
+        for i, (o, _) in enumerate(objects):
+            o.id = f"obj_{i}"
 
         self._publish(objects, msg.header.stamp, rgb, mask, table_z)
         lap("결과발행")
