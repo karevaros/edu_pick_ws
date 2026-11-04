@@ -42,17 +42,19 @@ from edu_pick_msgs.msg import DetectedObject, DetectedObjectArray
 from edu_pick_perception.common import default_scene_file, quat_to_mat, object_markers
 
 
-def cloud_to_arrays(msg):
-    """PointCloud2(격자형) → xyz (H,W,3) float32, rgb (H,W,3) uint8."""
+def cloud_to_arrays(msg, step=1):
+    """PointCloud2(격자형) → xyz (H,W,3) float32, rgb (H,W,3) uint8.
+    step > 1 이면 가로·세로 step 칸마다 하나만 쓴다(솎아내기 — 점 수 1/step²)."""
     fields = {f.name: f.offset for f in msg.fields}
     dtype = np.dtype({"names": ["x", "y", "z", "rgb"],
                       "formats": ["<f4", "<f4", "<f4", "<u4"],
                       "offsets": [fields["x"], fields["y"], fields["z"], fields["rgb"]],
                       "itemsize": msg.point_step})
-    a = np.frombuffer(bytes(msg.data), dtype=dtype, count=msg.width * msg.height)
-    h, w = msg.height, msg.width
-    xyz = np.stack([a["x"], a["y"], a["z"]], axis=-1).reshape(h, w, 3)
-    c = a["rgb"].reshape(h, w)
+    a = np.frombuffer(msg.data, dtype=dtype, count=msg.width * msg.height).reshape(msg.height, msg.width)
+    if step > 1:
+        a = a[::step, ::step]
+    xyz = np.stack([a["x"], a["y"], a["z"]], axis=-1)
+    c = a["rgb"]
     rgb = np.stack([(c >> 16) & 255, (c >> 8) & 255, c & 255], axis=-1).astype(np.uint8)
     return xyz, rgb
 
@@ -64,6 +66,8 @@ class ObjectDetector(Node):
         self.declare_parameter("world_frame", "world")
         self.declare_parameter("scene_file", default_scene_file())
         self.declare_parameter("rate", 3.0)     # 초당 처리 횟수
+        # 솎아내기: 2 = 가로·세로 2칸마다 1점(848×480 → 424×240, 점 1/4). 대기위치에서 점 간격 약 1.2 mm
+        self.declare_parameter("decimate", 2)
 
         self.world = self.get_parameter("world_frame").value
         with open(self.get_parameter("scene_file").value) as f:
@@ -124,12 +128,13 @@ class ObjectDetector(Node):
             self.get_logger().warn(f"TF 없음 {self.world}←{msg.header.frame_id}: {e}", throttle_duration_sec=5.0)
             return
         self._retries = 0
-        self._count_between_fingers(msg)
+        step = max(1, int(self.get_parameter("decimate").value))
+        xyz_cam, rgb = cloud_to_arrays(msg, step)       # 메시지 해석은 한 번만
+        lap("점군해석")
+        self._count_between_fingers(msg, xyz_cam, step)
         lap("TF·손가락확인")
         R = quat_to_mat(t.transform.rotation)
         p = t.transform.translation
-        xyz_cam, rgb = cloud_to_arrays(msg)
-        lap("점군해석")
         H, W, _ = xyz_cam.shape
         valid = np.isfinite(xyz_cam[..., 2]) & (xyz_cam[..., 2] > 0.05)
         P = xyz_cam.reshape(-1, 3) @ R.T + np.array([p.x, p.y, p.z])
@@ -166,7 +171,7 @@ class ObjectDetector(Node):
         except Exception:
             pass
         mask = (roi & (hgt > c["min_height"]) & (hgt < c["max_height"]) & (Z < z_max)).astype(np.uint8) * 255
-        k5 = np.ones((5, 5), np.uint8)
+        k5 = np.ones((5, 5) if step == 1 else (3, 3), np.uint8)     # 솎아낸 만큼 작은 커널
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k5)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5)
 
@@ -175,16 +180,16 @@ class ObjectDetector(Node):
         lap("물체분리")
         objects = []
         for cnt in contours:
-            if cv2.contourArea(cnt) < 100:
+            if cv2.contourArea(cnt) < 100 / step ** 2:
                 continue
             blob = np.zeros((H, W), np.uint8)
             cv2.drawContours(blob, [cnt], -1, 255, -1)
             # 깊이 카메라는 물체 경계에 '튀는 점'(앞뒤 거리가 섞인 점)을 만든다 → 테두리 2 px 를 깎고,
             # 그래도 남은 먼 점은 중심 거리로 버린다 (실기에서 1~2% 의 점이 사과를 29 cm 로 늘렸다)
-            core = cv2.erode(blob, np.ones((5, 5), np.uint8))
+            core = cv2.erode(blob, k5)
             sel = (core > 0) & (mask > 0)
             pts = P[sel]
-            if len(pts) < 50:
+            if len(pts) < max(15, 50 // step ** 2):
                 continue
             d = np.linalg.norm(pts[:, :2] - np.median(pts[:, :2], axis=0), axis=1)
             pts = pts[d <= 1.5 * np.percentile(d, 90)]
@@ -216,7 +221,7 @@ class ObjectDetector(Node):
             {"stamp": stamp, "objects": len(objects), "ms": {k: round(v, 2) for k, v in tm.items()}},
             ensure_ascii=False)))
 
-    def _count_between_fingers(self, msg):
+    def _count_between_fingers(self, msg, xyz_cam, step):
         """손끝(tool_tip) 좌표에서 두 손가락 사이 공간의 점 개수.
         tool_tip: z = 접근(아래) 방향 · x = 손가락이 닫히는 방향
         → 가운데 기둥 |x| < 1.5 cm · |y| < 5 cm · 손끝 위 0.3~3 cm 안의 점 = 손에 남은 물체
@@ -225,14 +230,14 @@ class ObjectDetector(Node):
             t = self.tf.lookup_transform("tool_tip", msg.header.frame_id, Time.from_msg(msg.header.stamp))
         except Exception:
             return
-        xyz, _ = cloud_to_arrays(msg)
-        P = xyz.reshape(-1, 3)
-        P = P[np.isfinite(P[:, 2])]
+        # 손가락·손에 든 물체는 카메라에서 30 cm 안에 있다 → 그 점만 변환한다(전체 변환은 낭비)
+        P = xyz_cam.reshape(-1, 3)
+        P = P[np.isfinite(P[:, 2]) & (P[:, 2] > 0.02) & (P[:, 2] < 0.30)]
         p = t.transform.translation
         P = P @ quat_to_mat(t.transform.rotation).T + np.array([p.x, p.y, p.z])
         # |x| < 1.5 cm: 놓을 때 '물체 폭 + 3 cm' 만 열므로 손가락이 ±1.5 cm 바깥에 온다(가장 작은 물체 기준)
         n = int(np.count_nonzero((np.abs(P[:, 0]) < 0.015) & (np.abs(P[:, 1]) < 0.05) &
-                                 (P[:, 2] > -0.03) & (P[:, 2] < -0.003)))
+                                 (P[:, 2] > -0.03) & (P[:, 2] < -0.003))) * step * step   # 솎아내기 전 점 수로 환산
         self.pub_between.publish(Int32(data=n))
 
     @staticmethod
@@ -326,7 +331,9 @@ class ObjectDetector(Node):
         self.pub.publish(out)
         self.pub_mk.publish(object_markers(out.objects, self.world, table_z))
 
-        # 디버그 그림: 컬러 영상 + 물체 마스크(초록) + 윤곽·이름
+        # 디버그 그림: 컬러 영상 + 물체 마스크(초록) + 윤곽·이름 — 보는 사람이 있을 때만 그린다
+        if self.pub_img.get_subscription_count() == 0:
+            return
         img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         if mask is not None:
             img[mask > 0] = (0.5 * img[mask > 0] + [0, 110, 0]).astype(np.uint8)
