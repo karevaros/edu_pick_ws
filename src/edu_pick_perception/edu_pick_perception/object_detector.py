@@ -9,7 +9,7 @@
   ② 테이블 높이 추정: 높이 히스토그램에서 가장 많은 높이 = 테이블 면
   ③ 테이블보다 min_height 이상 높은 점 = 물체 후보 (마스크)
   ④ 마스크에서 덩어리(윤곽선) 찾기 → 덩어리마다 3D 점을 모아
-  ⑤ 윗면 점들의 외곽(xy)에 '최소 외접 사각형'을 씌운다
+  ⑤ 윗면 점들에서 튀는 점을 뺀 뒤 '최소 외접 사각형'을 씌운다
        · 가로세로가 비슷하고 사각형을 덜 채우면(원은 78.5%) → round (캔·병·공)
        · 아니면 → box
        · 짧은 변 길이 = 집을 폭, 짧은 변 방향 = 그리퍼가 닫힐 방향(yaw)
@@ -196,48 +196,66 @@ class ObjectDetector(Node):
                                  (P[:, 2] > -0.03) & (P[:, 2] < -0.003)))
         self.pub_between.publish(Int32(data=n))
 
+    @staticmethod
+    def robust_box(xy, lo=2.0, hi=98.0, pad=0.10):
+        """튀는 점을 뺀 외접 상자.
+        ① 주성분(PCA)으로 긴 축·짧은 축을 잡고, 각 축에서 하위 2 %~상위 98 % 범위를 구한다
+        ② 그 범위를 양쪽으로 10 % 넓힌 창 밖의 점 = 튀는 점 → 버린다
+        ③ 남은 점에 최소 외접 사각형(cv2.minAreaRect)
+        ⚠ ①의 범위를 그대로 크기로 쓰면 원(디스크)은 가장자리 점이 적어 15~20 % 작게 나온다(가상 시험에서 확인).
+          ③을 전체 점에 바로 쓰면 튀는 점 몇 개에 크게 부푼다(실기: 누운 페트병 5.8 → 11.6 cm).
+        반환: 중심(x, y), 폭(짧은 변), 길이(긴 변), 짧은 변 방향 단위벡터, 볼록 껍질 면적"""
+        m = xy.mean(axis=0)
+        d = xy - m
+        _, vecs = np.linalg.eigh(np.cov(d.T))
+        keep = np.ones(len(xy), bool)
+        for axis in (vecs[:, 0], vecs[:, 1]):
+            t = d @ axis
+            t0, t1 = np.percentile(t, [lo, hi])
+            margin = pad * (t1 - t0)
+            keep &= (t >= t0 - margin) & (t <= t1 + margin)
+        pts = xy[keep].astype(np.float32)
+        hull = cv2.convexHull(pts)
+        rect = cv2.minAreaRect(hull)
+        (cx, cy), (a, b), _ = rect
+        box = cv2.boxPoints(rect)
+        e1, e2 = box[1] - box[0], box[2] - box[1]
+        short = e1 if np.linalg.norm(e1) <= np.linalg.norm(e2) else e2
+        short = short / max(np.linalg.norm(short), 1e-9)
+        return (cx, cy), float(min(a, b)), float(max(a, b)), short, float(cv2.contourArea(hull))
+
     def describe(self, pts, table_z):
         """한 덩어리의 3D 점 → DetectedObject (모양·중심·폭·방향·높이).
 
-        ⚠ 카메라가 물체 바로 위가 아니면 옆면도 보인다 → 전체 외곽은 길쭉하게 부푼다.
+        ⚠ 카메라가 물체 바로 위가 아니면 옆면도 보인다 → 전체 외곽은 부푼다.
           그래서 모양·중심·방향은 **윗면 띠**(윗면에서 1.5 cm 이내 점)로 정하고,
-          집을 수 있는지 판정할 폭은 전체 외곽까지 봐서 보수적으로(큰 쪽) 잡는다."""
+          전체 외곽 폭은 '그리퍼에 들어가나' 판정에만 쓴다.
+        크기는 튀는 점에 강한 robust_box 로 잰다."""
         c = self.cfg
         h = pts[:, 2] - table_z
         top = float(np.percentile(h, 95))           # 윗면 높이 (튀는 점 5% 무시)
 
-        hull_all = cv2.convexHull(pts[:, :2].astype(np.float32))
-        if cv2.contourArea(hull_all) < c["min_area"]:   # 위에서 본 면적 [m²]이 너무 작으면 잡음
+        _, outer, _, _, area_all = self.robust_box(pts[:, :2])
+        if area_all < c["min_area"]:                # 위에서 본 면적 [m²]이 너무 작으면 잡음
             return None
-        _, (a_all, b_all), _ = cv2.minAreaRect(hull_all)
 
         top_pts = pts[h > top - 0.015]
         if len(top_pts) < 20:
             return None
-        hull = cv2.convexHull(top_pts[:, :2].astype(np.float32))
-        rect = cv2.minAreaRect(hull)
-        # 윗면 띠는 외곽의 일부라 외곽보다 넓을 수 없다. 넓게 나오면 잡음(투명 PET·경계 점)이 섞인 것
-        #   → 외곽으로 중심·폭·방향을 정한다 (실기: 누운 페트병 윗면 11.4 cm ↔ 외곽 7 cm)
-        if min(rect[1]) > min(a_all, b_all) + 0.005:
-            hull = hull_all
-            rect = cv2.minAreaRect(hull_all)
-        (cx, cy), (a, b), _ = rect
-        box = cv2.boxPoints(rect)
-        e1, e2 = box[1] - box[0], box[2] - box[1]
-        short_vec = e1 if np.linalg.norm(e1) <= np.linalg.norm(e2) else e2
-        width, length = float(min(a, b)), float(max(a, b))
+        (cx, cy), width, length, short_dir, area = self.robust_box(top_pts[:, :2])
+        if width > outer + 0.005:                   # 윗면은 외곽보다 넓을 수 없다 → 잡음, 외곽으로
+            (cx, cy), width, length, short_dir, area = self.robust_box(pts[:, :2])
 
-        fill = float(cv2.contourArea(hull)) / max(width * length, 1e-9)  # 사각형을 얼마나 채우나 (원 ≈ 0.785)
+        fill = area / max(width * length, 1e-9)     # 사각형을 얼마나 채우나 (원 ≈ 0.785)
         aspect = length / max(width, 1e-9)
         o = DetectedObject()
         if aspect < 1.2 and fill < 0.88:
             o.shape = "round"
-            (cx, cy), r = cv2.minEnclosingCircle(hull)
-            length = float(2 * r)
+            length = width = (width + length) / 2
             o.yaw = float("nan")                     # 원은 어느 방향으로 잡아도 같다
         else:
             o.shape = "box"
-            yaw = math.atan2(float(short_vec[1]), float(short_vec[0]))
+            yaw = math.atan2(float(short_dir[1]), float(short_dir[0]))
             # 그리퍼는 180° 대칭 → -90°~+90° 로 정리
             while yaw > math.pi / 2:
                 yaw -= math.pi
@@ -245,11 +263,9 @@ class ObjectDetector(Node):
                 yaw += math.pi
             o.yaw = yaw
         o.top_center = Point(x=float(cx), y=float(cy), z=table_z + top)
-        o.width, o.length, o.height = width, max(length, width), top   # 윗면 기준 크기(표시용)
-        # 집을 수 있나: 옆면까지 본 외곽 폭과 윗면 폭 중 큰 쪽으로 보수적으로 판정
+        o.width, o.length, o.height = width, max(length, width), top
         # 집을 수 있나: 윗면 폭 ≤ max_grip_width, 그리고 옆면까지 본 외곽 폭 ≤ 그리퍼 최대 벌림
-        #   (외곽 폭은 비스듬히 보인 옆면·경계 잡음이 섞여 1~2 cm 크게 나온다 — 실기 사과: 윗면 8.2 · 외곽 9.7 cm)
-        outer = float(min(a_all, b_all))
+        #   (외곽 폭은 비스듬히 보인 옆면이 섞여 1~2 cm 크게 나온다 — 실기 사과: 윗면 8.2 · 외곽 9.7 cm)
         o.graspable = width <= float(c["max_grip_width"]) and outer <= self.max_open
         if not o.graspable:
             o.note = (f"너무 넓음(윗면 {width * 100:.1f} cm > {float(c['max_grip_width']) * 100:.1f} cm)"
