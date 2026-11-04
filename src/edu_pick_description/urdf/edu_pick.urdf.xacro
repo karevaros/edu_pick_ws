@@ -86,12 +86,13 @@
   </xacro:onrobot_rg2>
 
   <!-- ④ 집기 기준점: 그리퍼를 최대로 벌렸을 때의 손끝(실측 20.5 cm). MoveIt 은 이 프레임을 목표로 계획한다.
-       닫으면 실제 손끝은 이보다 최대 3.5 cm 앞으로 나온다(pick_place 가 잡는 높이에 반영) -->
+       닫으면 실제 손끝은 이보다 최대 3.5 cm 앞으로 나온다(pick_place 가 잡는 높이에 반영).
+       y = −flange_x_offset: rg2_hand y = 툴 플랜지 X. 실제 손가락 중심이 플랜지 −X 쪽으로 치우친 만큼 기준점을 옮긴다 -->
   <link name="tool_tip"/>
   <joint name="tool_tip_joint" type="fixed">
     <parent link="rg2_hand"/>
     <child link="tool_tip"/>
-    <origin xyz="${scene['gripper']['tip_open']} 0 0" rpy="${pi/2} 0 ${pi/2}"/>
+    <origin xyz="${scene['gripper']['tip_open']} ${-scene['gripper'].get('flange_x_offset', 0.0)} 0" rpy="${pi/2} 0 ${pi/2}"/>
   </joint>
 
   <!-- ⑤ 손목 카메라 D405 (외형은 상자로 근사: 42×42×23 mm) -->
