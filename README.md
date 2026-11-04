@@ -160,6 +160,7 @@ ros2 run edu_pick_task pick_place --step
 **로봇·펜던트**
 - [ ] E-stop 해제 · 로봇 활성화(펜던트) · **모드 확인**. 펜던트로 활성화할 때 모드가 Real 로 바뀌어 있던 이력이 있다.
 - [ ] 그리퍼가 RG2 이고 펜던트에서 열고 닫기가 된다.
+- [ ] **제어박스 자체 안전 영역(인박스, In-box)** 설정 확인 — 작업 영역·하역 칸·초기위치·대기위치를 모두 포함하거나 해제. 영역을 벗어나면 제어박스가 팔을 멈추고 ROS 쪽에는 `Unexpected robot state changed` 로만 보인다(실기 19회차).
 
 **장면 맞추기 (`scene.yaml`)**
 - [ ] `table.top_z` — 테이블 윗면 높이(로봇 베이스 바닥 기준). 로봇이 테이블 위에 직접 고정돼 있으면 0
@@ -197,7 +198,7 @@ ros2 run edu_pick_task go_pose home              # scene.yaml 의 home / observe
 | `직선 경로를 xx% 밖에 못 만듦` | 하강 중 손목 한계·충돌. 물체를 로봇 정면 쪽으로 옮긴다 |
 | 인식 결과 0개 | 대기위치에서 물체가 시야 밖이거나 `roi` 밖. `rqt_image_view /edu_pick/debug_image` 확인 |
 | `✕ 가장자리에 잘림` | 물체가 시야나 인식 영역 경계에 걸려 크기를 알 수 없음. 물체를 안쪽으로 |
-| 실행 중 `Unexpected robot state changed` | 네트워크 지연. 유선 연결, 무선이면 `servo_t2:=0.1` |
+| 실행 중 `Unexpected robot state changed` | ① 제어박스 **인박스(안전 영역)** 를 벗어남 — 펜던트 설정 확인 ② 네트워크 지연 — 유선 연결, 무선이면 `servo_t2:=0.1` ③ 펜던트 조작·재연결 |
 | move_group 로그의 `No 3D sensor plugin(s) defined` | 정상(이 실습은 옥토맵을 쓰지 않는다) |
 
 ---
