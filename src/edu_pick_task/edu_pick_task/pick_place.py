@@ -632,6 +632,9 @@ class PickPlace(Node):
             lying = (lb is not None and obj.shape == "box" and obj.length >= 2.5 * obj.width
                      and obj.height <= 1.5 * obj.width)
             squeeze = float(lb["squeeze"]) if lying else None
+            if obj.height >= 2.5 * obj.width and "tall_max_insert" in gcfg:     # 세운 병 등 키 큰 물체
+                max_depth = min(max_depth, float(gcfg["tall_max_insert"]))
+                self.say(f"   → 키 큰 물체 — 손 안으로 {max_depth * 100:.1f} cm 까지만")
             if lying:
                 max_depth = min(max_depth, float(lb["max_insert"]))
                 self.say(f"   → 누운 병으로 판단(길이 {obj.length * 100:.0f} cm · 폭 {obj.width * 100:.1f} cm) — "
