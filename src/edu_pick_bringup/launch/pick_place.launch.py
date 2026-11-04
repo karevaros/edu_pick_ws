@@ -136,6 +136,9 @@ def _setup(context):
              namespace="gripper_controller", output="screen",
              parameters=[{"dry_run": dry, "force_pct": int(_scene(desc)["gripper"].get("force_pct", 40)),
                           "settle_sec": 2.5,
+                          "settle_base": float(_scene(desc)["gripper"].get("settle_base", 0.4)),
+                          "speed_mps": float(_scene(desc)["gripper"].get("speed_mps", 0.0)),
+                          "stroke_m": float(_scene(desc)["gripper"].get("max_open", 0.10)),
                           "init_on_start": a("gripper_init").lower() in ("true", "1")}]),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory("edu_pick_moveit"), "launch", "move_group.launch.py"))),

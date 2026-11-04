@@ -54,7 +54,11 @@ class GripperAdapter(Node):
         self.declare_parameter("joint_closed", 0.0)     # 0 %
         self.declare_parameter("joint_open", 0.6)       # 100 %
         self.declare_parameter("force_pct", 40)         # 힘 [%] — launch 가 scene.yaml gripper.force_pct 를 넘긴다
-        self.declare_parameter("settle_sec", 1.5)       # 명령 후 기다리는 시간
+        self.declare_parameter("settle_sec", 1.5)       # 명령 후 기다리는 시간 (speed_mps 가 0 일 때만 고정값으로 씀)
+        # 이동 거리에 비례한 대기: settle_base + 이동 거리 / speed_mps  (물체에 닿으면 더 일찍 멈추므로 보수적)
+        self.declare_parameter("settle_base", 0.4)
+        self.declare_parameter("speed_mps", 0.0)        # 0 = 고정 settle_sec
+        self.declare_parameter("stroke_m", 0.10)        # 0 ~ 100 % 의 손가락 벌림 [m]
         self.declare_parameter("cmd_move", "gripper_macro 12,0,1,0,{ratio_pct:.0f},{force_pct},0,0,0,0")
         self.declare_parameter("cmd_init", "gripper_macro 12,0,0,0,0,0,0,0,0,0")   # 빈 값이면 보내지 않음
 
@@ -143,7 +147,13 @@ class GripperAdapter(Node):
             gh.abort()
             result.error_code = FollowJointTrajectory.Result.PATH_TOLERANCE_VIOLATED
             return result
-        time.sleep(float(self.get_parameter("settle_sec").value))
+        speed = float(self.get_parameter("speed_mps").value)
+        if speed > 0:
+            stroke = abs(self._ratio(target) - self._ratio(self._pos)) * float(self.get_parameter("stroke_m").value)
+            wait = float(self.get_parameter("settle_base").value) + stroke / speed
+        else:
+            wait = float(self.get_parameter("settle_sec").value)
+        time.sleep(wait)
         self._pos = target
         gh.succeed()
         result.error_code = FollowJointTrajectory.Result.SUCCESSFUL
