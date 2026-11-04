@@ -216,6 +216,11 @@ class ObjectDetector(Node):
             return None
         hull = cv2.convexHull(top_pts[:, :2].astype(np.float32))
         rect = cv2.minAreaRect(hull)
+        # 윗면 띠는 외곽의 일부라 외곽보다 넓을 수 없다. 넓게 나오면 잡음(투명 PET·경계 점)이 섞인 것
+        #   → 외곽으로 중심·폭·방향을 정한다 (실기: 누운 페트병 윗면 11.4 cm ↔ 외곽 7 cm)
+        if min(rect[1]) > min(a_all, b_all) + 0.005:
+            hull = hull_all
+            rect = cv2.minAreaRect(hull_all)
         (cx, cy), (a, b), _ = rect
         box = cv2.boxPoints(rect)
         e1, e2 = box[1] - box[0], box[2] - box[1]
