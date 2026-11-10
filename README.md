@@ -224,13 +224,14 @@ ros2 action list                               # 시나리오가 쓰는 액션�
 
 ### 실습 3 — 설정 바꿔 보기 (15분)
 `~/edu_pick_ws/src/edu_pick_description/config/scene.yaml` 을 고치고 **시나리오만 다시 실행**하면 됩니다(빌드 불필요).
+단 `detection.*` 과 `sim_objects` 는 인식 노드·가상 카메라가 **시작할 때 한 번만** 읽으므로, 이 항목은 `launch` 를 Ctrl+C 로 끄고 다시 실행해야 반영됩니다(시나리오만 재실행하면 이전 값 그대로).
 
 | 바꿔 볼 것 | 항목 | 관찰 |
 |---|---|---|
 | 하역 위치 | `place.xy` | 닿지 않는 곳(예: `[0.9, 0.5]`)이면? → IK 실패 메시지 |
-| 집기 폭 기준 | `detection.max_grip_width` | 0.06 으로 하면 사과가 `✕ 너무 넓음` 이 된다 |
+| 집기 폭 기준 | `detection.max_grip_width` | 0.06 으로 하면 사과가 `✕ 너무 넓음` 이 된다 (`launch` 재시작 필요) |
 | 물체 고르기 | `pick_place --shape round` | 원형만 집는다(`box` 도 해 보기) |
-| 인식 기준 | `detection.min_height` | 0.10 으로 하면 낮은 박스가 사라짐 |
+| 인식 기준 | `detection.min_height` | 0.10 으로 하면 낮은 박스가 사라짐 (`launch` 재시작 필요) |
 | 가상 물체 | `sim_objects` | 물체를 추가·회전 (`launch` 재시작 필요) |
 | 속도 | `motion.velocity_scaling` | ⚠ 실기에서는 0.20 을 넘기지 말 것(하드웨어 상한 0.8 rad/s) |
 
