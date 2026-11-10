@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 <!-- ROBOTIS open_manipulator (main 2f7d3d0, 2026-04-29) open_manipulator_description/urdf/omx_f/omx_f_arm.urdf.xacro
-     Apache-2.0 · Copyright ROBOTIS CO., LTD.  edu_pick 수정: 메시 경로, 관절 한계(원본 ±2π → 다이나믹셀 위치 한계 근처) -->
+     Apache-2.0 · Copyright ROBOTIS CO., LTD.  edu_pick 수정: 메시 경로, 관절 한계(원본 ±2π → 다이나믹셀 위치 한계 근처 · joint4 상한 102° = 실기에서 손목 카메라 장착 상태로 약 105° 에서 막힘) -->
 
    <xacro:macro name="omx_f" params="prefix">
    <xacro:property name="meshes_file_direction" value="package://edu_pick_description/meshes/omx_f" />
@@ -142,7 +142,7 @@
          <child link="${prefix}link4" />
          <origin xyz="0.162 0 0" rpy="0 0 0" />
          <axis xyz="0 1 0" />
-         <limit velocity="4.8" effort="1000" lower="-1.85" upper="2.10" />
+         <limit velocity="4.8" effort="1000" lower="-1.85" upper="1.78" />
          <dynamics damping="0.1" />
       </joint>
       <link name="${prefix}link4" >

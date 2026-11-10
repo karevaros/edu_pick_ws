@@ -19,14 +19,16 @@ arm_controller:
     state_interfaces: [position, velocity]
     allow_partial_joints_goal: false
     # 허용오차가 없으면 팔이 목표에 못 가도 시간만 지나면 '성공'으로 끝난다(RB5 실기에서 확인된 함정)
+    #   trajectory 0.25 rad: 0.15 로는 실기에서 관절 4 가 추종 지연 0.150 rad 로 중단됐다(관절 3 이 3 초에 90° 도는 궤적)
+    #   goal 0.06 rad: 팔을 앞으로 뻗으면 중력으로 관절 3 이 0.043 rad 처진 채 멈춘다(ROBOTIS 설정은 I 게인 0) — 손끝 약 7 mm
     constraints:
       stopped_velocity_tolerance: 0.02
       goal_time: 1.0
-      joint1: {trajectory: 0.15, goal: 0.03}
-      joint2: {trajectory: 0.15, goal: 0.03}
-      joint3: {trajectory: 0.15, goal: 0.03}
-      joint4: {trajectory: 0.15, goal: 0.03}
-      joint5: {trajectory: 0.15, goal: 0.03}
+      joint1: {trajectory: 0.25, goal: 0.06}
+      joint2: {trajectory: 0.25, goal: 0.06}
+      joint3: {trajectory: 0.25, goal: 0.06}
+      joint4: {trajectory: 0.25, goal: 0.06}
+      joint5: {trajectory: 0.25, goal: 0.06}
 
 gripper_controller:
   ros__parameters:
