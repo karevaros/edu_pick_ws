@@ -119,7 +119,7 @@ class ColorDetector(Node):
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k5)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5)
             all_mask |= mask
-            plane_z = self.table_z + float(col["height"])
+            sphere = str(col["height"]) == "sphere"
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for cnt in contours:
                 if cv2.contourArea(cnt) < 30:
@@ -127,20 +127,7 @@ class ColorDetector(Node):
                 blob = np.zeros((H, W), np.uint8)
                 cv2.drawContours(blob, [cnt], -1, 255, -1)
                 vs, us = np.nonzero(blob)
-                # ② 픽셀 → 광학 프레임 광선 → ③ world 광선과 윗면 평면의 교점
-                if self._D is not None:           # 왜곡 보정: 휘어 보인 픽셀을 바늘구멍 카메라 좌표로
-                    n = cv2.undistortPoints(np.stack([us, vs], -1).astype(np.float32).reshape(-1, 1, 2),
-                                            self._K, self._D).reshape(-1, 2)
-                    rays = np.stack([n[:, 0], n[:, 1], np.ones(len(n))], -1) @ R.T
-                else:
-                    rays = np.stack([(us - cx) / fx, (vs - cy) / fy, np.ones_like(us, float)], -1) @ R.T
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    s = (plane_z - cam[2]) / rays[:, 2]
-                ok = np.isfinite(s) & (s > 0)
-                if ok.sum() < 20:
-                    continue
-                xy = cam[:2] + s[ok, None] * rays[ok, :2]
-                o = self.describe(xy, plane_z, float(col["height"]), col["name"])
+                o = self.locate(us, vs, R, cam, fx, fy, cx, cy, col, sphere)
                 if o is None:
                     continue
                 # 인식 영역(roi) 밖 · 영상 가장자리에 걸린 덩어리
@@ -157,6 +144,34 @@ class ColorDetector(Node):
         self.pub_timing.publish(String(data=json.dumps(
             {"stamp": stamp, "objects": len(found), "ms": {"합계": round((time.perf_counter() - t0) * 1000, 2)}},
             ensure_ascii=False)))
+
+    def locate(self, us, vs, R, cam, fx, fy, cx, cy, col, sphere):
+        """덩어리 픽셀 → 광선 → 평면과의 교점 → DetectedObject.
+        평면 높이: 색마다 정한 물체 높이(윗면) · sphere 면 지름의 절반(위에서 보이는 윤곽 = 적도)"""
+        # ② 픽셀 → 광학 프레임 광선
+        if self._D is not None:                   # 왜곡 보정: 휘어 보인 픽셀을 바늘구멍 카메라 좌표로
+            n = cv2.undistortPoints(np.stack([us, vs], -1).astype(np.float32).reshape(-1, 1, 2),
+                                    self._K, self._D).reshape(-1, 2)
+            rays = np.stack([n[:, 0], n[:, 1], np.ones(len(n))], -1) @ R.T
+        else:
+            rays = np.stack([(us - cx) / fx, (vs - cy) / fy, np.ones_like(us, float)], -1) @ R.T
+        height = 0.05 if sphere else float(col["height"])
+        o = None
+        for _ in range(3 if sphere else 1):       # 공: 지름 → 높이 → 다시 지름 (2~3 번이면 수렴)
+            plane_z = self.table_z + (height / 2 if sphere else height)
+            # ③ world 광선과 평면의 교점
+            with np.errstate(divide="ignore", invalid="ignore"):
+                s = (plane_z - cam[2]) / rays[:, 2]
+            ok = np.isfinite(s) & (s > 0)
+            if ok.sum() < 20:
+                return None
+            xy = cam[:2] + s[ok, None] * rays[ok, :2]
+            o = self.describe(xy, self.table_z + height, height, col["name"])
+            if o is None or not sphere:
+                return o
+            height = o.width
+        o.top_center.z, o.height = self.table_z + o.width, o.width
+        return o
 
     def describe(self, xy, top_z, height, color):
         """윗면 위의 점(xy, world) → DetectedObject. 모양·폭·방향은 깊이판과 같은 규칙."""

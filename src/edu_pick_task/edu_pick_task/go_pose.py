@@ -50,6 +50,9 @@ def main():
             if time.time() - t0 > 20:
                 raise StepFailed("/joint_states 가 들어오지 않음 — bringup 이 떠 있나요?")
             time.sleep(0.1)
+        if not args.show:
+            node.detach_held(strict=False)  # 중간에 멈춘 pick_place 가 남긴 '쥔 물체'·장면 물체 — 남아 있으면 계획이 막힌다
+            node.clear_leftovers()          #   (⚠ 실제로 물체를 쥐고 있으면 그 물체는 충돌 검사에서 빠진다)
         cur = [node.joints[j] for j in node.arm_joints]
         print("지금 관절[deg]: " + "  ".join(f"{j} {math.degrees(v):7.2f}" for j, v in zip(node.arm_joints, cur)))
         if args.show:

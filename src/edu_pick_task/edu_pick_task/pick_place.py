@@ -61,7 +61,8 @@ from geometry_msgs.msg import Pose, Quaternion
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
 from moveit_msgs.msg import (AttachedCollisionObject, CollisionObject, Constraints, DisplayTrajectory,
                              JointConstraint, MoveItErrorCodes, PlanningScene, RobotState, RobotTrajectory)
-from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath, GetPositionIK
+from moveit_msgs.msg import PlanningSceneComponents
+from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath, GetPlanningScene, GetPositionIK
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Int32, String
@@ -120,6 +121,8 @@ class PickPlace(Node):
 
         self.joints = {}
         self.active_goal = None
+        self.fixtures = self.box_walls(self.scene.get("box"))
+        self.fixed_yaw = False        # True = 손목 방향을 골라 둠 → IK 가 180° 뒤집지 않는다   # 하역 상자 벽 (scene 에 box 가 있을 때)
         # ── 시간 계측 ── 순서대로 일어난 일(timeline) + 인식 노드의 프레임별 처리 시간
         self.timeline = []            # dict(cycle, step, category, name, start, dur)
         self.det_frames = []          # 인식 노드가 보낸 프레임별 단계 시간(ms)
@@ -137,6 +140,7 @@ class PickPlace(Node):
 
         self.ik = self.create_client(GetPositionIK, "/compute_ik")
         self.apply_scene = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
+        self.get_scene = self.create_client(GetPlanningScene, "/get_planning_scene")
         self.obstacle_ids = set()     # MoveIt 장면에 넣어 둔 물체 이름
         self.placed = []              # 이미 옮겨 놓은 물체 (장애물로 계속 둔다)
         self.cart = self.create_client(GetCartesianPath, "/compute_cartesian_path")
@@ -347,7 +351,7 @@ class PickPlace(Node):
         cur = np.array([self.joints[j] for j in self.arm_joints])
         x, y = pose.orientation.x, pose.orientation.y
         yaw = 2 * math.atan2(y, x)
-        for cand_yaw in (yaw, yaw + math.pi):
+        for cand_yaw in ((yaw,) if getattr(self, "fixed_yaw", False) else (yaw, yaw + math.pi)):
             req = GetPositionIK.Request()
             req.ik_request.group_name = GROUP
             req.ik_request.ik_link_name = TIP
@@ -399,8 +403,12 @@ class PickPlace(Node):
             raise StepFailed(f"{what}: 직선 경로를 {res.fraction * 100:.0f}% 밖에 못 만듦")
         traj = res.solution.joint_trajectory
         q = np.array([p.positions for p in traj.points])
-        if len(q) > 1 and np.max(np.abs(np.diff(q, axis=0))) > 0.15:
-            raise StepFailed(f"{what}: 직선 경로 중 관절이 갑자기 크게 돈다(손목 뒤집힘) — 실행 안 함")
+        # 손목 뒤집힘 = 한 칸만 유난히 크게 도는 것. 고정 문턱(0.15 rad)만 보면 OMX 처럼 MoveIt 이 성글게
+        #   (9.5 cm 를 8점) 돌려준 고른 경로도 막힌다(실기: 칸마다 0.154 rad, 뒤집힘 없음) → 중앙값의 3배도 함께 본다
+        if len(q) > 2:
+            step = np.max(np.abs(np.diff(q, axis=0)), axis=1)
+            if step.max() > 0.15 and step.max() > 3.0 * np.median(step):
+                raise StepFailed(f"{what}: 직선 경로 중 관절이 갑자기 크게 돈다(손목 뒤집힘) — 실행 안 함")
         self._retime(traj, abs(dz))
         self.execute(RobotTrajectory(joint_trajectory=traj), what)
 
@@ -457,8 +465,44 @@ class PickPlace(Node):
         if not res.success:
             raise StepFailed(f"{what}: MoveIt 장면 반영 실패")
 
+    OWN_PREFIX = ("obstacle_", "placed_", "earlier_", "held_object", "fixture_")
+
+    def clear_leftovers(self):
+        """앞 실행이 중간에 멈추며 MoveIt 장면에 남긴 물체를 지운다.
+        (안 지우면 '이미 놓은 물체'가 장애물로 남아 손이 그 안에 있는 것으로 보여 다음 계획이 막힌다 — OMX 실기)"""
+        if not self.get_scene.wait_for_service(timeout_sec=5.0):
+            return
+        req = GetPlanningScene.Request()
+        req.components.components = PlanningSceneComponents.WORLD_OBJECT_NAMES
+        res = self.wait(self.get_scene.call_async(req), 10.0, "장면 조회")
+        old = [co.id for co in res.scene.world.collision_objects if co.id.startswith(self.OWN_PREFIX)]
+        if old:
+            ps = PlanningScene(is_diff=True)
+            ps.robot_state.is_diff = True
+            ps.world.collision_objects = [CollisionObject(id=i, operation=CollisionObject.REMOVE) for i in old]
+            self._apply(ps, "남은 물체 정리")
+            self.say(f"   (앞 실행이 남긴 장면 물체 {len(old)}개 정리: {', '.join(old)})")
+
+    def box_walls(self, box):
+        """하역 상자 → 벽 4개(장애물). box: center_xy · outer_size_xy · height · wall · yaw_deg"""
+        if not box:
+            return []
+        cx, cy = (float(v) for v in box["center_xy"])
+        sx, sy = (float(v) for v in box["outer_size_xy"])
+        h, w = float(box["height"]), float(box.get("wall", 0.005))
+        yaw = math.radians(float(box.get("yaw_deg", 0.0)))
+        c, s = math.cos(yaw), math.sin(yaw)
+        walls = []
+        for k, (dx, dy, wx, wy) in enumerate([((sx - w) / 2, 0, w, sy), (-(sx - w) / 2, 0, w, sy),
+                                               (0, (sy - w) / 2, sx, w), (0, -(sy - w) / 2, sx, w)]):
+            walls.append({"id": f"fixture_box_{k}", "shape": "box", "x": cx + c * dx - s * dy, "y": cy + s * dx + c * dy,
+                          "bottom": self.table_z, "width": wx, "length": wy, "height": h, "yaw": yaw, "pad": 0.0})
+        return walls
+
     def set_obstacles(self, items):
-        """장애물 목록으로 장면을 바꾼다. items: dict(id, shape, x, y, bottom, width, length, height, yaw)"""
+        """장애물 목록으로 장면을 바꾼다. items: dict(id, shape, x, y, bottom, width, length, height, yaw)
+        하역 상자 벽(fixtures)은 언제나 함께 넣는다."""
+        items = list(items) + self.fixtures
         ps = PlanningScene(is_diff=True)
         ps.robot_state.is_diff = True
         for oid in self.obstacle_ids:
@@ -466,10 +510,11 @@ class PickPlace(Node):
         for it in items:
             co = CollisionObject(id=it["id"], operation=CollisionObject.ADD)
             co.header.frame_id = WORLD
-            co.primitives = [self._primitive(it["shape"], it["width"], it["length"], it["height"], self.PAD)]
+            pad = it.get("pad", float(self.m.get("obstacle_pad", self.PAD)))
+            co.primitives = [self._primitive(it["shape"], it["width"], it["length"], it["height"], pad)]
             p = Pose()
             p.position.x, p.position.y = float(it["x"]), float(it["y"])
-            p.position.z = float(it["bottom"]) + (it["height"] + self.PAD) / 2
+            p.position.z = float(it["bottom"]) + (it["height"] + pad) / 2
             yaw = 0.0 if it["shape"] == "round" or math.isnan(it["yaw"]) else it["yaw"]
             p.orientation.z, p.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
             co.primitive_poses = [p]
@@ -558,7 +603,46 @@ class PickPlace(Node):
             return "low"                                     # 사과·공·납작한 박스
         return "normal"                                      # 박스·캔
 
-    def plan_grasp(self, obj):
+    def clear_yaw(self, x, y, width, discs, yaw, what):
+        """손목 방향 고르기 — 벌린 두 손끝과 그리퍼 몸통 옆 돌출부가 주변 물체(discs: x, y, 반지름)·
+        하역 상자 벽에서 가장 멀어지는 방향 (15° 간격). 고르면 self.fixed_yaw = True (IK 가 180° 뒤집지 않게).
+
+        OMX 실기·가상에서 차례로 막힌 것:
+          · 손목 방향 그대로 → 옆 토마토에 손끝이 닿음
+          · 가장 가까운 이웃과 직각 → 2×2 배치에서 다른 이웃 쪽으로 손끝
+          · 손끝만 봄 → 그리퍼 몸통(link5)의 한쪽 돌출부(카메라 쪽, 약 6.6 cm)가 옆 토마토 윗부분에 닿음
+            ⇒ 돌출부는 한쪽에만 있어 0~360° 를 본다(gripper.side_reach)"""
+        self.fixed_yaw = False
+        side = [float(v) for v in self.g.get("side_reach", [])]   # 손끝 y축(tool y) 쪽 돌출 거리들 [m]
+        if not discs and not self.fixtures:
+            return yaw
+        half = 0.5 * min(float(self.g["max_open"]), width + float(self.g.get("approach_margin", 0.03)))
+
+        def wall_dist(tx, ty, w):            # 점 → 벽(회전된 직사각형) 거리 (위에서 본 2D)
+            c, s = math.cos(w["yaw"]), math.sin(w["yaw"])
+            lx, ly = c * (tx - w["x"]) + s * (ty - w["y"]), -s * (tx - w["x"]) + c * (ty - w["y"])
+            return math.hypot(max(abs(lx) - w["width"] / 2, 0.0), max(abs(ly) - w["length"] / 2, 0.0))
+
+        def clearance(a):
+            pts = [(x + k * half * math.cos(a), y + k * half * math.sin(a)) for k in (-1, 1)]
+            # 손끝 y축 = (sin a, −cos a) — 위에서 아래로 집는 자세에서 tool z = −z, tool x = (cos a, sin a)
+            pts += [(x + r * math.sin(a), y - r * math.cos(a)) for r in side]
+            d = [math.hypot(px - cx, py - cy) - rr for px, py in pts for cx, cy, rr in discs]
+            d += [wall_dist(px, py, w) for px, py in pts for w in self.fixtures]
+            return min(d) if d else 1.0
+        span = 360 if side else 180
+        best = max((math.radians(d) for d in range(0, span, 15)), key=clearance)
+        now = max(clearance(yaw), clearance(yaw + math.pi))     # IK 는 yaw·yaw+180° 중 덜 도는 쪽을 쓴다
+        if clearance(best) > now + 0.005:
+            self.say(f"   → 손목 {math.degrees(best):.0f}° — {what}에서 멀어지게 (여유 {now * 100:.1f} → {clearance(best) * 100:.1f} cm)")
+        elif side:                                 # 돌출부가 있으면 덜 도는 쪽이 아니라 여유 큰 쪽으로 고정
+            best = yaw if clearance(yaw) >= clearance(yaw + math.pi) else yaw + math.pi
+        else:
+            return yaw
+        self.fixed_yaw = bool(side)
+        return best
+
+    def plan_grasp(self, obj, others=()):
         """잡는 손끝 높이·방향·조임 정하기.  반환 dict(kind, yaw, grip_z, advance, squeeze)
 
         깊이 = 손끝이 물체 윗면보다 내려가는 거리
@@ -566,9 +650,13 @@ class PickPlace(Node):
         🔴 RG2 안쪽 스위치: 물체 윗면이 palm_depth 보다 깊이 들어가면 스위치가 눌려 그리퍼가 멈춘다
            → 깊이 상한 = palm_depth − palm_margin (키 큰 물체·누운 병은 더 얕게)"""
         kind = self.classify(obj)
+        self.fixed_yaw = False
         if math.isnan(obj.yaw):                     # 원형: 지금 손목 방향 그대로
             q = self.tip_pose().orientation
             yaw = 2 * math.atan2(q.y, q.x)
+            if self.rules.get("round_yaw_avoid"):
+                discs = [(o.top_center.x, o.top_center.y, o.width / 2) for o in others]
+                yaw = self.clear_yaw(obj.top_center.x, obj.top_center.y, obj.width, discs, yaw, "이웃 물체")
         else:                                       # 박스: 짧은 변 방향으로 닫는다
             yaw = obj.yaw
         low = obj.height < self.rules["low_ratio"] * obj.width      # 낮으면(누운 병 포함) 가운데 높이
@@ -605,8 +693,12 @@ class PickPlace(Node):
         raise StepFailed("인식 결과가 들어오지 않음 — /edu_pick/objects 를 확인하세요")
 
     def place_slots(self, n):
-        """k 번째 물체를 놓을 xy — 하역 위치에서 step_xy 씩 옆으로."""
+        """k 번째 물체를 놓을 xy — place.slots 가 있으면 그 목록(상자 안 칸), 없으면 하역 위치에서 step_xy 씩 옆으로."""
         pl = self.scene["place"]
+        if "slots" in pl:
+            if n > len(pl["slots"]):
+                raise StepFailed(f"하역 칸이 {len(pl['slots'])}개뿐입니다 (요청 {n}개) — scene 의 place.slots")
+            return [tuple(float(v) for v in s) for s in pl["slots"][:n]]
         return [(pl["xy"][0] + k * pl["step_xy"][0], pl["xy"][1] + k * pl["step_xy"][1]) for k in range(n)]
 
     def choose(self, objects, slots):
@@ -649,7 +741,7 @@ class PickPlace(Node):
         slots = all_slots[first_slot:]
         # 앞 칸에는 이전 실행에서 놓은 물체가 있다고 보고 장애물로 둔다 (카메라 인식 영역 밖이라 안 보인다)
         for i, (sx, sy) in enumerate(all_slots[:first_slot]):
-            d, h = EARLIER_PLACED_SIZE
+            d, h = self.scene["place"].get("earlier_size", EARLIER_PLACED_SIZE)
             self.placed.append({"id": f"earlier_{i}", "shape": "round", "x": sx, "y": sy, "bottom": self.table_z,
                                 "width": d, "length": d, "height": h, "yaw": float("nan")})
         m = self.m
@@ -665,6 +757,7 @@ class PickPlace(Node):
                 raise StepFailed(f"{n} 서비스 없음 — move_group 이 떠 있나요?")
 
         self.detach_held(strict=False)     # 앞 실행이 남긴 장면 정리
+        self.clear_leftovers()
         self.set_obstacles(list(self.placed))
         self.step(1, "초기위치로 이동")
         self.move_joints(poses["home"], "초기위치")
@@ -687,7 +780,7 @@ class PickPlace(Node):
                 self.say("   → 집을 수 있는 물체가 없습니다. 종료합니다.")
                 break
             with self.timer("위치계산", "잡는 높이·방향"):
-                gp = self.plan_grasp(obj)
+                gp = self.plan_grasp(obj, [o for o in seen if o.id != obj.id])
             yaw, grip_z, advance = gp["yaw"], gp["grip_z"], gp["advance"]
             above_z = obj.top_center.z + float(m["approach_height"])
             self.say(f"   → 선택: {obj.id} ({obj.shape}) · 집기 방향 {math.degrees(yaw):.0f}° · "
@@ -715,12 +808,16 @@ class PickPlace(Node):
             release_z = self.table_z + (grip_z - (obj.top_center.z - obj.height)) + gap
             if tall:
                 self.say(f"   → 키 큰 물체(높이 {obj.height * 100:.0f} cm · 폭 {obj.width * 100:.1f} cm) — 테이블 위 {gap * 100:.0f} cm 에서 놓음")
-            place_above = release_z + float(m["approach_height"])
+            # 하역은 상자 벽을 넘어야 해서 더 높이서 내려갈 수 있다 (place_approach_height · 없으면 approach_height)
+            place_above = release_z + float(m.get("place_approach_height", m["approach_height"]))
             self.step(8, "하역 위치 위로 이동")
             place_xy = slots[k]
             self.say(f"   → 하역 위치 ({place_xy[0]:.2f}, {place_xy[1]:.2f})")
             # 박스형(긴 물체)은 정해진 방향으로 놓는다 — 원형은 방향이 상관없어 손목을 돌리지 않는다
             place_yaw = yaw if obj.shape == "round" else math.radians(float(self.scene["place"].get("yaw_deg", 0.0)))
+            if obj.shape == "round" and self.rules.get("round_yaw_avoid"):
+                discs = [(it["x"], it["y"], it["width"] / 2) for it in self.placed]
+                place_yaw = self.clear_yaw(place_xy[0], place_xy[1], obj.width, discs, place_yaw, "상자 벽·놓은 물체")
             self.move_above(place_xy[0], place_xy[1], place_above, place_yaw, "하역 위치 이동")
 
             self.step(9, f"하강 {(place_above - release_z) * 100:.1f} cm")

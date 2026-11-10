@@ -245,7 +245,8 @@ def _setup_omx(context):
     if real and _on(a("camera")):
         nodes.append(Node(package="usb_cam", executable="usb_cam_node_exe", name="usb_cam", namespace="camera1",
                           output="screen",
-                          parameters=[{"video_device": a("video_device") or cam["device"],
+                          # realpath: usb_cam 0.8.1 은 /dev/v4l/by-id/… 같은 상대 링크를 '/dev/../../video4' 로 잘못 풀어 실패한다
+                          parameters=[{"video_device": os.path.realpath(a("video_device") or cam["device"]),
                                        "image_width": int(cam["width"]), "image_height": int(cam["height"]),
                                        "pixel_format": "mjpeg2rgb", "framerate": 15.0,
                                        "camera_name": "omx_cam", "frame_id": "usb_cam_optical_frame",

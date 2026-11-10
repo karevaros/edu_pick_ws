@@ -142,8 +142,14 @@ class FakeCamera(Node):
         #   (닫기 목표가 물체마다 달라 고정 문턱은 안 된다.
         #    직전 메시지와만 비교하면 천천히 닫히는 그리퍼(OMX: 메시지당 0.02 rad)는 영영 못 잡는다)
         if self.finger is None:
-            self.finger = q
+            self.finger, self.last_q = q, q
             return
+        # 그리퍼가 멈춰 있으면 '이번 닫기' 판정을 새로 할 수 있게 한다
+        #   (OMX: 최대로 연 상태에서 '물체 폭 + 2 cm' 로 좁히는 열기도 닫히는 움직임이라, 대기위치에서 집기 판정을
+        #    써 버려 정작 물체에서 닫을 때 판정을 안 했다)
+        if abs(q - self.last_q) < 1e-3:
+            self.tried = False
+        self.last_q = q
         if q < self.finger - 0.05:
             self.finger = q
             if self.held is None and not self.tried:

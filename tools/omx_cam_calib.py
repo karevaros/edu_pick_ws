@@ -6,6 +6,7 @@
     테이블 위 대기위치 아래쪽에 빨간 둥근 물체(토마토·공) 하나 — 공 모양이어야 한다(높이 = 지름으로 본다)
 
     python3 tools/omx_cam_calib.py            # 측정 + 계산 + 결과 출력 (scene_omx.yaml 은 고치지 않음)
+    python3 tools/omx_cam_calib.py --x 0.21   # 손끝 시작 위치 지정 (공이 화면 가장자리에 걸리면)
 
 ■ 원리
   손끝을 위에서 아래로 향한 채 ①좌우·앞뒤 2 cm 옮기기 ②2 cm 들기 ③손목만 ±25° 돌리기 를 하면서
@@ -146,6 +147,11 @@ def main():
 
     T0, _ = cal.tool_pose()
     x0, y0, z0, yaw0 = T0[0], T0[1], T0[2], math.pi / 2
+    # 시작 위치 바꾸기: --x 0.21 --y 0.0 --z 0.11 (공이 화면 가운데 오게)
+    args = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+    x0 = float(args.get("--x", x0))
+    y0 = float(args.get("--y", y0))
+    z0 = float(args.get("--z", z0))
     print(f"기준 손끝 ({x0:.3f}, {y0:.3f}, {z0:.3f}) — 이 자세(대기위치)에서 시작한다")
     plan = [("기준", 0, 0, 0, 0), ("+y", 0, STEP, 0, 0), ("-y", 0, -STEP, 0, 0), ("+x", STEP, 0, 0, 0),
             ("-x", -STEP, 0, 0, 0), ("들기", 0, 0, LIFT, 0), ("손목+", 0, 0, 0, ROLL), ("손목-", 0, 0, 0, -ROLL),
