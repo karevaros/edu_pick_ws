@@ -1,0 +1,41 @@
+# ros2_control 컨트롤러 설정 — OMX 판 (가짜 하드웨어·실기 공통)
+#   팔 = arm_controller · 그리퍼 = gripper_controller. 둘 다 FollowJointTrajectory 액션이라
+#   pick_place 노드는 RB5 판과 같은 방법으로 부른다(RB5 판 그리퍼는 gripper_adapter 노드가 같은 액션을 흉내).
+#   (ROBOTIS 기본 설정은 그리퍼에 GripperActionController 를 쓴다)
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    gripper_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+arm_controller:
+  ros__parameters:
+    joints: [joint1, joint2, joint3, joint4, joint5]
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]
+    allow_partial_joints_goal: false
+    # 허용오차가 없으면 팔이 목표에 못 가도 시간만 지나면 '성공'으로 끝난다(RB5 실기에서 확인된 함정)
+    constraints:
+      stopped_velocity_tolerance: 0.02
+      goal_time: 1.0
+      joint1: {trajectory: 0.15, goal: 0.03}
+      joint2: {trajectory: 0.15, goal: 0.03}
+      joint3: {trajectory: 0.15, goal: 0.03}
+      joint4: {trajectory: 0.15, goal: 0.03}
+      joint5: {trajectory: 0.15, goal: 0.03}
+
+gripper_controller:
+  ros__parameters:
+    joints: [gripper_joint_1]
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]
+    # 그리퍼는 물체에 막혀 목표 각도까지 못 가는 것이 정상(그 자리에서 전류 제한 힘으로 쥔다)
+    #   → 목표 도달 오차는 검사하지 않는다 (0 = 검사 안 함)
+    constraints:
+      stopped_velocity_tolerance: 0.0
+      goal_time: 0.0
+      gripper_joint_1: {trajectory: 0.0, goal: 0.0}

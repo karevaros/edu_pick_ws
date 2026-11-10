@@ -9,7 +9,7 @@
 #
 #   하는 일
 #     [0] ROS 2 Humble 설치 (없을 때만 · 공식 apt 저장소 · 약 3 GB 내려받음)
-#     [1] apt 패키지 설치 (MoveIt·ros2_control·RealSense 드라이버·OpenCV …) + RealSense USB 권한(udev) 규칙
+#     [1] apt 패키지 설치 (MoveIt·ros2_control·RealSense·다이나믹셀·usb_cam·OpenCV …) + USB 권한(udev·dialout)
 #     [2] 레인보우 로봇 C++ SDK(rbpodo) 빌드 → ~/edu_pick_ws/thirdparty/install (sudo 불필요)
 #     [3] 레인보우 ROS 2 드라이버(rbpodo_ros2) 받기 + 실습용 패치 3개 적용
 #     [4] 워크스페이스 빌드
@@ -79,6 +79,7 @@ APT_PKGS=(
   ros-humble-xacro ros-humble-joint-state-publisher ros-humble-joint-state-publisher-gui
   ros-humble-cv-bridge ros-humble-tf2-ros ros-humble-tf2-geometry-msgs
   ros-humble-realsense2-camera ros-humble-rqt-image-view
+  ros-humble-dynamixel-hardware-interface ros-humble-usb-cam   # OMX-F 조별 실습 (robot:=omx)
   python3-opencv python3-numpy python3-yaml python3-colcon-common-extensions
   git cmake build-essential
   fonts-noto-cjk            # RViz 의 한글 표시 이름 (데스크톱에는 보통 이미 있다)
@@ -105,6 +106,11 @@ else
     echo "  RealSense USB 권한 규칙 설치"
   else
     echo "  RealSense USB 권한 규칙 이미 있음"
+  fi
+  # OMX-F(U2D2 · /dev/ttyACM*)를 sudo 없이 쓰려면 dialout 그룹 — 적용은 다시 로그인한 뒤부터
+  if ! id -nG "$USER" | grep -qw dialout; then
+    sudo usermod -aG dialout "$USER"
+    echo "  dialout 그룹 추가 (OMX 포트 권한) — ⚠ 로그아웃 후 다시 로그인해야 적용됩니다"
   fi
 fi
 

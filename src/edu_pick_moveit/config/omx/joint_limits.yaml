@@ -1,0 +1,10 @@
+# OMX-F 관절 제한 (MoveIt). URDF 의 속도 4.8 rad/s 는 너무 빨라 실습용으로 낮춘다.
+#   가속도는 ROBOTIS moveit_config(omx_f) 의 5.0 을 따른다.
+default_velocity_scaling_factor: 0.30
+default_acceleration_scaling_factor: 0.30
+joint_limits:
+  joint1: {has_velocity_limits: true, max_velocity: 2.0, has_acceleration_limits: true, max_acceleration: 5.0}
+  joint2: {has_velocity_limits: true, max_velocity: 2.0, has_acceleration_limits: true, max_acceleration: 5.0}
+  joint3: {has_velocity_limits: true, max_velocity: 2.0, has_acceleration_limits: true, max_acceleration: 5.0}
+  joint4: {has_velocity_limits: true, max_velocity: 2.0, has_acceleration_limits: true, max_acceleration: 5.0}
+  joint5: {has_velocity_limits: true, max_velocity: 2.0, has_acceleration_limits: true, max_acceleration: 5.0}

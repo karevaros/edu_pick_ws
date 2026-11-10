@@ -7,7 +7,11 @@
   ③ 실습실 — 실제 구동 (강사 확인 후)
        ros2 launch edu_pick_bringup pick_place.launch.py mode:=real robot_ip:=192.168.35.100 cb_simulation:=false
 
-  그다음 다른 터미널에서:  ros2 run edu_pick_task pick_place --step
+  ④ OMX-F (조별 실기 실습 — ROBOTIS OMX-F + USB 카메라)
+       ros2 launch edu_pick_bringup pick_place.launch.py robot:=omx mode:=real
+       (실기 전 점검: robot:=omx 만 주면 가짜 하드웨어 + 가상 USB 카메라)
+
+  그다음 다른 터미널에서:  ros2 run edu_pick_task pick_place --step            (OMX: --robot omx 추가)
 
 ■ 띄우는 노드
    robot_state_publisher   URDF → TF
@@ -37,7 +41,7 @@ HW_PARAMS = {
     "max_joint_velocity": (0.0, 1.0, "관절 속도 상한[rad/s]"),
     "script_grace": (0.0, 10.0, "그리퍼 명령 뒤 서보 끊김 허용[s]"),
 }
-OWN_NODES = ("robot_state_publisher", "controller_manager", "joint_state_publisher", "gripper_adapter",
+OWN_NODES = ("usb_cam", "robot_state_publisher", "controller_manager", "joint_state_publisher", "gripper_adapter",
              "move_group", "object_detector", "fake_camera", "d405")
 
 
@@ -108,6 +112,11 @@ def _setup(context):
     mode = a("mode")
     if mode not in ("sim", "real"):
         raise RuntimeError("mode 는 sim 또는 real 입니다.")
+    robot = a("robot")
+    if robot == "omx":
+        return _setup_omx(context)
+    if robot != "rb5":
+        raise RuntimeError("robot 은 rb5 또는 omx 입니다.")
     real = mode == "real"
     cb_sim = _on(a("cb_simulation"))
     desc = get_package_share_directory("edu_pick_description")
@@ -151,7 +160,8 @@ def _setup(context):
                           "settle_sec": float(grip["settle_sec"]), "stroke_m": float(grip["max_open"]),
                           "init_on_start": _on(a("gripper_init"))}]),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory("edu_pick_moveit"), "launch", "move_group.launch.py"))),
+            os.path.join(get_package_share_directory("edu_pick_moveit"), "launch", "move_group.launch.py")),
+            launch_arguments={"robot": "rb5"}.items()),
         Node(package="edu_pick_perception", executable="object_detector", output="screen"),
     ]
     use_cam = _on(a("camera"))
@@ -179,9 +189,88 @@ def _setup(context):
     return nodes
 
 
+def _setup_omx(context):
+    """OMX-F + USB 카메라.  RB5 판과 같은 노드 구성 — 다른 점:
+       · 팔·그리퍼 모두 ros2_control (다이나믹셀) → gripper_adapter 없음
+       · 카메라 = usb_cam (깊이 없음) → color_detector (색 + 테이블 평면)"""
+    a = lambda n: context.launch_configurations[n]
+    real = a("mode") == "real"
+    desc = get_package_share_directory("edu_pick_description")
+    bringup = get_package_share_directory("edu_pick_bringup")
+    scene_file = os.path.join(desc, "config", "scene_omx.yaml")
+    with open(scene_file) as f:
+        scene = yaml.safe_load(f)
+    cam = scene["camera"]
+
+    _check_no_stale_nodes()
+    port = a("port_name")
+    if real:
+        if not os.path.exists(port):
+            raise RuntimeError(f"OMX 포트 {port} 가 없습니다 — USB 케이블·전원(12 V)을 확인하세요.\n"
+                               "  · ls /dev/ttyACM* /dev/ttyUSB* 로 포트를 찾아 port_name:=… 로 주세요\n"
+                               "  · 권한 오류면: sudo usermod -aG dialout $USER 후 다시 로그인")
+        if not os.access(port, os.R_OK | os.W_OK):
+            raise RuntimeError(f"OMX 포트 {port} 에 접근 권한이 없습니다.\n"
+                               "  sudo usermod -aG dialout $USER  후 로그아웃·다시 로그인 (install.sh 가 해 준다)")
+        for pkg, apt in (("dynamixel_hardware_interface", "ros-humble-dynamixel-hardware-interface"),
+                         ("usb_cam", "ros-humble-usb-cam")):
+            try:
+                get_package_share_directory(pkg)
+            except Exception:
+                raise RuntimeError(f"{pkg} 가 없습니다: sudo apt install {apt}")
+        print(f"[pick_place] 모드 = 🔴 OMX-F 실기 {port} — 팔이 실제로 움직입니다")
+    else:
+        print("[pick_place] 모드 = OMX sim (가짜 하드웨어 + 가상 USB 카메라)")
+
+    urdf = subprocess.check_output([
+        "xacro", os.path.join(desc, "urdf", "edu_pick_omx.urdf.xacro"),
+        f"use_fake_hardware:={'false' if real else 'true'}", f"port_name:={port}"], text=True)
+    nodes = [
+        Node(package="robot_state_publisher", executable="robot_state_publisher",
+             parameters=[{"robot_description": urdf}]),
+        Node(package="controller_manager", executable="ros2_control_node", output="both",
+             parameters=[os.path.join(desc, "config", "controllers_omx.yaml")],
+             remappings=[("~/robot_description", "/robot_description"), ("joint_states", "arm/joint_states")]),
+        # 그리퍼 둘째 턱(gripper_joint_2)은 첫째 턱을 거울처럼 따라간다(mimic) → joint_state_publisher 가 채운다
+        Node(package="joint_state_publisher", executable="joint_state_publisher",
+             parameters=[{"source_list": ["arm/joint_states"], "rate": 30}]),
+        Node(package="controller_manager", executable="spawner",
+             arguments=["joint_state_broadcaster", "arm_controller", "gripper_controller"]),
+        IncludeLaunchDescription(PythonLaunchDescriptionSource(
+            os.path.join(get_package_share_directory("edu_pick_moveit"), "launch", "move_group.launch.py")),
+            launch_arguments={"robot": "omx"}.items()),
+        Node(package="edu_pick_perception", executable="color_detector", output="screen",
+             parameters=[{"scene_file": scene_file}]),
+    ]
+    if real and _on(a("camera")):
+        nodes.append(Node(package="usb_cam", executable="usb_cam_node_exe", name="usb_cam", namespace="camera1",
+                          output="screen",
+                          parameters=[{"video_device": a("video_device") or cam["device"],
+                                       "image_width": int(cam["width"]), "image_height": int(cam["height"]),
+                                       "pixel_format": "mjpeg2rgb", "framerate": 15.0,
+                                       "camera_name": "omx_cam", "frame_id": "usb_cam_optical_frame",
+                                       "camera_info_url": cam.get("calibration_url", "") or ""}]))
+    elif real:
+        print("[pick_place] 카메라 끔(camera:=false) — 인식 결과가 나오지 않습니다")
+    else:
+        nodes.append(Node(package="edu_pick_perception", executable="fake_camera", output="screen",
+                          parameters=[{"scene_file": scene_file, "camera": "usb", "rate": 2.0}]))
+    if _on(a("rviz")):
+        srdf = _read(os.path.join(get_package_share_directory("edu_pick_moveit"), "config", "omx",
+                                  "edu_pick_omx.srdf"))
+        nodes.append(Node(package="rviz2", executable="rviz2", output="log",
+                          arguments=["-d", os.path.join(bringup, "config", "pick_place.rviz")],
+                          parameters=[{"robot_description": urdf, "robot_description_semantic": srdf}]))
+    print("[pick_place] 시나리오 실행(다른 터미널):  ros2 run edu_pick_task pick_place --robot omx --step")
+    return nodes
+
+
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument("robot", default_value="rb5", description="rb5 = RB5-850e / omx = ROBOTIS OMX-F (조별 실기)"),
         DeclareLaunchArgument("mode", default_value="sim", description="sim = 로봇 없이 연습 / real = 실기"),
+        DeclareLaunchArgument("port_name", default_value="/dev/ttyACM0", description="OMX: 제어 보드(OpenRB-150 / U2D2) USB 포트"),
+        DeclareLaunchArgument("video_device", default_value="", description="OMX: 웹캠 장치(비우면 scene_omx.yaml camera.device)"),
         DeclareLaunchArgument("robot_ip", default_value="192.168.35.100", description="제어박스 IP"),
         DeclareLaunchArgument("cb_simulation", default_value="true",
                               description="true = 제어박스 Simulation 모드(팔 안 움직임) / false = 🔴 실제 구동"),
@@ -196,7 +285,7 @@ def generate_launch_description():
                               description="그리퍼 명령 뒤 서보 끊김 허용[s] — 넓은 물체를 힘으로 쥘 때 1 s 로는 모자랐다(실기)"),
         DeclareLaunchArgument("gripper_init", default_value="true",
                               description="false = 시작할 때 그리퍼 초기화·열기를 하지 않음 (물체를 쥔 채 다시 접속할 때)"),
-        DeclareLaunchArgument("camera", default_value="true", description="mode:=real 에서 D405 드라이버 실행 여부"),
+        DeclareLaunchArgument("camera", default_value="true", description="mode:=real 에서 카메라 드라이버(D405 / OMX 는 usb_cam) 실행 여부"),
         DeclareLaunchArgument("camera_serial", default_value="", description="카메라가 여러 대일 때 시리얼"),
         DeclareLaunchArgument("rviz", default_value="true"),
         OpaqueFunction(function=_setup),

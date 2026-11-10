@@ -6,6 +6,9 @@ Third-party material included in this repository
 * src/edu_pick_description/meshes/rg2/  (OnRobot RG2 gripper meshes)
   From AndrejOrsula/ur5_rg2_ign (https://github.com/AndrejOrsula/ur5_rg2_ign), BSD license
   (as declared in that package's package.xml). Modified: mimic joint fix, packaging.
+* src/edu_pick_description/meshes/omx_f/ and urdf/omx_f/  (ROBOTIS OMX-F follower arm)
+  From ROBOTIS-GIT/open_manipulator (https://github.com/ROBOTIS-GIT/open_manipulator, main 2f7d3d0),
+  Apache-2.0, Copyright ROBOTIS CO., LTD. Modified: mesh paths, joint limits.
 
 Third-party software fetched by install.sh (not redistributed here)
 -------------------------------------------------------------------

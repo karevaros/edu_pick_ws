@@ -25,6 +25,10 @@ for p in rbpodo_description rbpodo_hardware rbpodo_msgs edu_pick_msgs edu_pick_d
 done
 ros2 pkg prefix realsense2_camera >/dev/null 2>&1 && ok "realsense2_camera" \
   || warn "realsense2_camera 없음 — 실습실(실기)에서 필요: sudo apt install ros-humble-realsense2-camera"
+ros2 pkg prefix dynamixel_hardware_interface >/dev/null 2>&1 && ok "dynamixel_hardware_interface (OMX-F)" \
+  || warn "dynamixel_hardware_interface 없음 — OMX-F 실기에서 필요: sudo apt install ros-humble-dynamixel-hardware-interface"
+ros2 pkg prefix usb_cam >/dev/null 2>&1 && ok "usb_cam (OMX 카메라)" \
+  || warn "usb_cam 없음 — OMX-F 실기에서 필요: sudo apt install ros-humble-usb-cam"
 
 echo "[3] 레인보우 드라이버 패치"
 LIB="$(ros2 pkg prefix rbpodo_hardware 2>/dev/null)/lib/librbpodo_hardware.so"
@@ -38,6 +42,8 @@ xacro "$(ros2 pkg prefix edu_pick_description)/share/edu_pick_description/urdf/e
 for f in tool_tip d405_link table rg2_hand; do
   grep -q "<link name=\"$f\"" /tmp/edu_pick_check.urdf && ok "링크 $f" || bad "링크 $f 없음"
 done
+xacro "$(ros2 pkg prefix edu_pick_description)/share/edu_pick_description/urdf/edu_pick_omx.urdf.xacro" > /tmp/edu_pick_omx_check.urdf 2>/dev/null \
+  && grep -q '<link name="tool_tip"' /tmp/edu_pick_omx_check.urdf && ok "OMX-F URDF 생성" || bad "OMX-F URDF 생성 실패"
 
 echo "[5] 카메라 (실습실에서만 필요)"
 if lsusb 2>/dev/null | grep -qi "8086:0b5b"; then ok "D405 USB 연결됨"; else warn "D405 연결 안 됨 (집에서는 정상)"; fi

@@ -11,34 +11,61 @@ import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch.substitutions import Command
 
 
-def moveit_params():
+# 로봇별 파일: (URDF xacro, MoveIt 설정 폴더, SRDF)
+ROBOTS = {
+    "rb5": ("edu_pick.urdf.xacro", "", "edu_pick.srdf"),
+    "omx": ("edu_pick_omx.urdf.xacro", "omx", "edu_pick_omx.srdf"),
+}
+
+
+def config_dir(robot):
+    return os.path.join(get_package_share_directory("edu_pick_moveit"), "config", ROBOTS[robot][1])
+
+
+def srdf_path(robot):
+    return os.path.join(config_dir(robot), ROBOTS[robot][2])
+
+
+def moveit_params(robot="rb5"):
     """move_group 에 넘기는 MoveIt 파라미터 묶음."""
     cfg = get_package_share_directory("edu_pick_moveit")
+    sub = config_dir(robot)
     desc = get_package_share_directory("edu_pick_description")
-    y = lambda n: yaml.safe_load(open(os.path.join(cfg, "config", n)))
+    y = lambda n: yaml.safe_load(open(os.path.join(sub, n)))
     return [
         # 계획에는 기하만 필요 → 하드웨어 인자는 기본값으로 둬도 링크·관절이 같다
         {"robot_description": ParameterValue(
-            Command(["xacro ", os.path.join(desc, "urdf", "edu_pick.urdf.xacro")]), value_type=str)},
-        {"robot_description_semantic": open(os.path.join(cfg, "config", "edu_pick.srdf")).read()},
+            Command(["xacro ", os.path.join(desc, "urdf", ROBOTS[robot][0])]), value_type=str)},
+        {"robot_description_semantic": open(srdf_path(robot)).read()},
         {"robot_description_kinematics": y("kinematics.yaml")},
         {"robot_description_planning": y("joint_limits.yaml")},
-        {"planning_pipelines": ["ompl"], "default_planning_pipeline": "ompl", "ompl": y("ompl_planning.yaml")},
+        {"planning_pipelines": ["ompl"], "default_planning_pipeline": "ompl",
+         "ompl": yaml.safe_load(open(os.path.join(cfg, "config", "ompl_planning.yaml")))},
+    ]
+
+
+def _setup(context):
+    robot = context.launch_configurations["robot"]
+    if robot not in ROBOTS:
+        raise RuntimeError(f"robot 은 {' / '.join(ROBOTS)} 중 하나입니다 (지금: {robot})")
+    ctrl = yaml.safe_load(open(os.path.join(config_dir(robot), "moveit_controllers.yaml")))
+    return [
+        Node(package="moveit_ros_move_group", executable="move_group", output="screen",
+             parameters=moveit_params(robot) + [ctrl, {
+                 "allow_trajectory_execution": True,
+                 "publish_planning_scene": True, "publish_geometry_updates": True,
+                 "publish_state_updates": True, "publish_transforms_updates": True}]),
     ]
 
 
 def generate_launch_description():
-    cfg = get_package_share_directory("edu_pick_moveit")
-    ctrl = yaml.safe_load(open(os.path.join(cfg, "config", "moveit_controllers.yaml")))
     return LaunchDescription([
-        Node(package="moveit_ros_move_group", executable="move_group", output="screen",
-             parameters=moveit_params() + [ctrl, {
-                 "allow_trajectory_execution": True,
-                 "publish_planning_scene": True, "publish_geometry_updates": True,
-                 "publish_state_updates": True, "publish_transforms_updates": True}]),
+        DeclareLaunchArgument("robot", default_value="rb5", description="rb5 = RB5-850e / omx = ROBOTIS OMX-F"),
+        OpaqueFunction(function=_setup),
     ])

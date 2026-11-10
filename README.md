@@ -135,7 +135,7 @@ cd ~/edu_pick_ws && git pull && bash install.sh
 |---|---|
 | `edu_pick_description` | 로봇 모델(URDF): 테이블 + RB5 + RG2 + D405. **`config/scene.yaml` = 실습 설정 파일(유일하게 고치는 파일)** |
 | `edu_pick_moveit` | MoveIt 설정(경로 계획) |
-| `edu_pick_perception` | `object_detector` 물체 인식 · `fake_camera` 가상 카메라(sim) |
+| `edu_pick_perception` | `object_detector` 물체 인식 · `color_detector` USB 카메라 색 인식(OMX) · `fake_camera` 가상 카메라(sim) |
 | `edu_pick_task` | `pick_place` **12단계 시나리오 노드 — 실습의 주인공** |
 | `edu_pick_bringup` | 전체 실행 launch · RG2 그리퍼 어댑터 |
 | `edu_pick_msgs` | 인식 결과 메시지 `DetectedObject` |
@@ -249,6 +249,24 @@ ros2 launch edu_pick_bringup pick_place.launch.py mode:=real robot_ip:=<제어�
 ros2 run edu_pick_task pick_place --step
 ```
 
+### 실습 4-B — OMX-F 조별 실기 (RB5 를 기다리는 동안)
+RB5 는 한 대뿐이라, 다른 조는 **ROBOTIS OMX-F**(5축 교육용 팔 + 그리퍼)와 **USB 웹캠**으로 같은 12단계 시나리오를 실제로 돌립니다.
+코드는 같고 `robot:=omx` · `--robot omx` 만 다릅니다. 설정 파일은 `config/scene_omx.yaml`.
+
+준비: OMX-F 전원(12 V) · 제어 보드(OpenRB-150) USB 연결 · 웹캠을 작업 영역 위 약 55 cm 에 아래를 보게 고정 · 색깔 큐브(빨강·초록·파랑·노랑, 3 cm)
+```bash
+ls /dev/ttyACM* /dev/video*                                   # 포트·카메라 확인
+ros2 launch edu_pick_bringup pick_place.launch.py robot:=omx mode:=real   # port_name:=/dev/ttyACM1 video_device:=/dev/video2 등
+ros2 run edu_pick_task go_pose --robot omx home               # 첫 구동: 초기자세로 (Enter 확인)
+ros2 run edu_pick_task pick_place --robot omx --step
+```
+RB5 판과 다른 점:
+- **카메라에 깊이가 없다.** 물체를 **색**으로 찾고, 색마다 정해 둔 **높이**(`detection.colors`)의 윗면에 있다고 보고 위치를 계산한다. 높이가 다른 물체를 올리면 위치가 어긋난다.
+- **카메라 위치를 자로 재서** `camera_mount` 에 넣어야 한다. 1 cm 틀리면 집는 위치도 약 1 cm 틀린다.
+- 5축이라 '위에서 집기'만 된다(손끝 아래 방향 + 손목 회전). 손이 닿는 범위는 로봇 앞 약 8~26 cm.
+- 그리퍼는 전류 제한으로 쥔다(물체에 닿으면 그 힘에서 멈춘다). 놓은 뒤 '손가락 사이 확인'은 하지 않는다.
+- 로봇 없이 미리 해 보기: `ros2 launch edu_pick_bringup pick_place.launch.py robot:=omx` (가짜 하드웨어 + 가상 웹캠)
+
 ---
 
 ## 4. 안전 수칙 (실기)
@@ -346,4 +364,5 @@ python3 ~/edu_pick_ws/tools/timing_report.py ~/edu_pick_runs/* -o report.md
 - 실습 코드: Apache-2.0 (`LICENSE`) · 외부 자료 목록 `NOTICE`
 - RB5 모델·드라이버: [RainbowRobotics/rbpodo_ros2](https://github.com/RainbowRobotics/rbpodo_ros2) (Apache-2.0, `install.sh` 가 받음) · SDK [rbpodo](https://github.com/RainbowRobotics/rbpodo) (Apache-2.0)
 - RG2 메시: [AndrejOrsula/ur5_rg2_ign](https://github.com/AndrejOrsula/ur5_rg2_ign) (BSD)
+- OMX-F 모델(메시·URDF·ros2_control): [ROBOTIS-GIT/open_manipulator](https://github.com/ROBOTIS-GIT/open_manipulator) (Apache-2.0, main `2f7d3d0`) — 관절 한계만 수정
 - `patches/` : 레인보우 드라이버 수정 3건(서보 유지시간 · 관절 속도 상한 · 그리퍼 명령 직후 끊김) — 실기 시험에서 확인한 문제를 고친 것

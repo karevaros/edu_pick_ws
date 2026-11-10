@@ -18,5 +18,6 @@ setup(
     entry_points={"console_scripts": [
         "object_detector = edu_pick_perception.object_detector:main",
         "fake_camera = edu_pick_perception.fake_camera:main",
+        "color_detector = edu_pick_perception.color_detector:main",
     ]},
 )

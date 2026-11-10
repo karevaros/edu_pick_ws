@@ -1,0 +1,7 @@
+# 역기구학(IK) — KDL. OMX-F 는 5축이라 임의의 6자유도 자세는 못 만든다.
+#   그래도 '위에서 아래로 집기'(손끝이 아래를 보고 손목만 돌린 자세)는 5축으로 정확히 만들 수 있는 자세라
+#   위치+방향 모두 맞추는 IK 로 푼다. (ROBOTIS 기본 설정은 position_only_ik: true — 방향을 무시한다)
+arm:
+  kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
+  kinematics_solver_search_resolution: 0.005
+  kinematics_solver_timeout: 0.05

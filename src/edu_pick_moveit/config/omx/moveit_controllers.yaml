@@ -1,0 +1,14 @@
+# MoveIt 이 계획한 궤적을 실행할 컨트롤러 = arm_controller (/arm_controller/follow_joint_trajectory)
+# 그리퍼는 실습 노드가 /gripper_controller/follow_joint_trajectory 를 직접 부른다.
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+moveit_simple_controller_manager:
+  controller_names: [arm_controller]
+  arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints: [joint1, joint2, joint3, joint4, joint5]
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.5
+  allowed_goal_duration_margin: 1.0
+  allowed_start_tolerance: 0.05

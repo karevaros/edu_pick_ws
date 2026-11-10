@@ -15,6 +15,9 @@ ACM 분류(Setup Assistant 와 동일 규칙):
 사용:
   xacro src/edu_pick_description/urdf/edu_pick.urdf.xacro > /tmp/edu.urdf
   python3 tools/gen_srdf.py /tmp/edu.urdf src/edu_pick_moveit/config/edu_pick.srdf 10000
+  OMX 판:
+  xacro src/edu_pick_description/urdf/edu_pick_omx.urdf.xacro > /tmp/omx.urdf
+  python3 tools/gen_srdf.py /tmp/omx.urdf src/edu_pick_moveit/config/omx/edu_pick_omx.srdf 10000
   (pip 의존: trimesh yourdfpy python-fcl — 학생은 실행할 필요 없음)
 """
 import os
@@ -156,18 +159,38 @@ for a, b, n in sorted(kept, key=lambda t: -t[2])[:12]:
 # ── SRDF 출력 ─────────────────────────────────────────────────────────────
 # 팔 그룹 = link0 → tool_tip(손끝). MoveIt 의 목표는 tool_tip 프레임 자세로 준다.
 ARM_CHAIN = ("link0", "tool_tip")
-ARM_JOINTS = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
+# 팔 사슬 밖의 움직이는 관절(그리퍼 손가락) = passive — MoveIt 이 계획하지 않는다
+chain, link = set(), ARM_CHAIN[1]
+child_joint = {j.child: j for j in robot.joint_map.values()}
+while link != ARM_CHAIN[0] and link in child_joint:
+    chain.add(child_joint[link].name)
+    link = child_joint[link].parent
+passive = [n for n, j in robot.joint_map.items() if j.type != "fixed" and n not in chain]   # mimic 관절 포함
+# 그리퍼 턱끼리: 같은 링크에 붙은 손가락 관절(passive)의 자식 링크 쌍은 닫으면 서로 닿는 것이 정상
+#   (OMX-F 의 두 턱은 완전히 닫으면 끝이 맞닿는다) → 검사에서 뺀다
+listed = {frozenset((a, b)) for a, b, _ in rows}
+fingers = defaultdict(list)
+for jn in passive:
+    j = robot.joint_map[jn]
+    if j.child in link_mesh:
+        fingers[j.parent].append(j.child)
+for kids in fingers.values():
+    for i, a in enumerate(kids):
+        for b in kids[i + 1:]:
+            if frozenset((a, b)) not in listed:
+                rows.append((*sorted((a, b)), "Gripper"))
+rows.sort(key=lambda r: (r[0], r[1]))
+
 L = ['<?xml version="1.0" encoding="UTF-8"?>',
      "<!-- 자동 생성: tools/gen_srdf.py — 직접 편집하지 말 것.",
      f"     무작위 {N_SAMPLES} 자세로 충돌 무시 쌍(ACM)을 산출. 로봇·그리퍼·카메라 형상을 바꾸면 재생성. -->",
-     '<robot name="edu_pick">',
+     f'<robot name="{robot.robot.name}">',
      '    <group name="arm">',
      f'        <chain base_link="{ARM_CHAIN[0]}" tip_link="{ARM_CHAIN[1]}"/>',
      "    </group>",
      '    <virtual_joint name="fixed_base" type="fixed" parent_frame="world" child_link="world"/>',
-     '    <passive_joint name="rg2_finger_joint1"/>',
-     '    <passive_joint name="rg2_finger_joint2"/>',
-     "    <!-- 충돌 무시 쌍 (Adjacent=붙어있음 / Always=항상겹침 / Never=절대안닿음 / Default=초기자세에서겹침) -->"]
+     *[f'    <passive_joint name="{j}"/>' for j in passive],
+     "    <!-- 충돌 무시 쌍 (Adjacent=붙어있음 / Always=항상겹침 / Never=절대안닿음 / Default=초기자세에서겹침 / Gripper=그리퍼 턱끼리) -->"]
 for a, b, why in rows:
     L.append(f'    <disable_collisions link1="{a}" link2="{b}" reason="{why}"/>')
 L.append("</robot>")

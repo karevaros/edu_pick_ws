@@ -3,6 +3,7 @@
 
     ros2 run edu_pick_task pick_place              # 연속 실행
     ros2 run edu_pick_task pick_place --step       # 움직이기 직전마다 멈춤: 경로를 RViz 로 확인 → Enter (실기 권장)
+    ros2 run edu_pick_task pick_place --robot omx --step   # OMX-F (scene_omx.yaml 을 쓴다)
     ros2 run edu_pick_task pick_place --count 2    # 물체 2개를 차례로 옮김
     ros2 run edu_pick_task pick_place --shape round  # 원형(캔·병 윗면·공·사과)만 집는다
     ros2 run edu_pick_task pick_place --first-slot 1 # 하역 첫 칸이 이미 차 있을 때 둘째 칸부터
@@ -68,9 +69,10 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from edu_pick_msgs.msg import DetectedObjectArray
 
-ARM_JOINTS = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
+ARM_JOINTS = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]   # RB5 (scene.yaml 에 arm_joints 가 없을 때)
 GROUP, TIP, WORLD = "arm", "tool_tip", "world"
 GRIPPER_OPEN = 0.6        # rg2_finger_joint1 [rad] = 100 % 벌림 (0 = 닫힘) — gripper_adapter 의 joint_open 과 같은 값
+RG2_TOUCH = ["rg2_leftfinger", "rg2_rightfinger", "rg2_hand"]
 EARLIER_PLACED_SIZE = (0.07, 0.12)   # 앞 실행에서 놓은 물체(크기 모름) — 넉넉히 지름 7 cm · 높이 12 cm 로 본다
 
 
@@ -95,17 +97,23 @@ def down_quat(yaw):
 
 
 class PickPlace(Node):
-    def __init__(self, step_mode=False, shape=None):
+    def __init__(self, step_mode=False, shape=None, robot="rb5"):
         super().__init__("pick_place")
         self.declare_parameter("scene_file", os.path.join(
-            get_package_share_directory("edu_pick_description"), "config", "scene.yaml"))
+            get_package_share_directory("edu_pick_description"), "config",
+            "scene_omx.yaml" if robot == "omx" else "scene.yaml"))
         with open(self.get_parameter("scene_file").value) as f:
             self.scene = yaml.safe_load(f)
         self.m = self.scene["motion"]          # 이동 설정
         self.g = self.scene["gripper"]         # 그리퍼 실측·설정
         self.rules = self.scene["grasp_rules"] # 물체별 잡는 법
+        # 로봇별 차이 (scene.yaml = RB5 / scene_omx.yaml = OMX-F)
+        self.arm_joints = list(self.scene.get("arm_joints", ARM_JOINTS))
+        self.grip_joint = self.g.get("joint", "rg2_finger_joint1")
+        self.grip_type = self.g.get("type", "linear")
+        self.touch_links = list(self.g.get("touch_links", RG2_TOUCH))
         # '열기' 벌림. '잡기'는 물체마다 close_target() 으로 정한다
-        self.grip_open = GRIPPER_OPEN * float(self.g["open_pct"]) / 100.0
+        self.grip_open = self.width_to_joint(float(self.g["max_open"]) * float(self.g["open_pct"]) / 100.0)
         self.table_z = float(self.scene["table"]["top_z"])
         self.step_mode = step_mode
         self.shape_filter = shape        # None = 모양 무관 / "round" / "box"
@@ -214,7 +222,10 @@ class PickPlace(Node):
 
     @timed("놓기확인")
     def held_points(self, timeout=3.0):
-        """그리퍼를 연 뒤 손가락 사이에 보이는 점 개수(멈춘 뒤 들어온 값). 카메라가 없으면 None."""
+        """그리퍼를 연 뒤 손가락 사이에 보이는 점 개수(멈춘 뒤 들어온 값). 카메라가 없으면 None.
+        USB 카메라(색 인식)는 깊이가 없어 이 확인을 하지 않는다 → 바로 None"""
+        if self.scene.get("detection", {}).get("method") == "color":
+            return None
         t_req = time.time() + 0.5
         while time.time() < t_req + timeout:
             if self.between is not None and self.between_time > t_req:
@@ -268,9 +279,9 @@ class PickPlace(Node):
             self.active_goal.cancel_goal_async()       # 받아 주는 서버(그리퍼 등)라면 이것도 먹는다
         # 정지 확인: 0.5초 간격 두 번 관절값이 거의 같으면 멈춘 것
         time.sleep(0.7)
-        a = np.array([self.joints.get(j, 0.0) for j in ARM_JOINTS])
+        a = np.array([self.joints.get(j, 0.0) for j in self.arm_joints])
         time.sleep(0.5)
-        b = np.array([self.joints.get(j, 0.0) for j in ARM_JOINTS])
+        b = np.array([self.joints.get(j, 0.0) for j in self.arm_joints])
         moved = float(np.max(np.abs(b - a)))
         if moved < 0.002:
             return "동작을 정지했습니다(관절 정지 확인)."
@@ -302,7 +313,7 @@ class PickPlace(Node):
         r.max_acceleration_scaling_factor = float(self.m["velocity_scaling"])   # 가속도도 같은 비율로
         r.start_state.is_diff = True
         c = Constraints()
-        for n, v in zip(ARM_JOINTS, target):
+        for n, v in zip(self.arm_joints, target):
             c.joint_constraints.append(JointConstraint(joint_name=n, position=float(v), tolerance_above=1e-4,
                                                        tolerance_below=1e-4, weight=1.0))
         r.goal_constraints = [c]
@@ -333,7 +344,7 @@ class PickPlace(Node):
     def solve_ik(self, pose):
         """손끝 목표 자세 → 관절값. 그리퍼는 180° 대칭이라 yaw 와 yaw+180° 둘 다 풀어 덜 도는 쪽을 쓴다."""
         best = None
-        cur = np.array([self.joints[j] for j in ARM_JOINTS])
+        cur = np.array([self.joints[j] for j in self.arm_joints])
         x, y = pose.orientation.x, pose.orientation.y
         yaw = 2 * math.atan2(y, x)
         for cand_yaw in (yaw, yaw + math.pi):
@@ -350,7 +361,7 @@ class PickPlace(Node):
             if res.error_code.val != MoveItErrorCodes.SUCCESS:
                 continue
             js = res.solution.joint_state
-            q = np.array([js.position[js.name.index(j)] for j in ARM_JOINTS])
+            q = np.array([js.position[js.name.index(j)] for j in self.arm_joints])
             cost = float(np.sum(np.abs(q - cur)))
             if best is None or cost < best[0]:
                 best = (cost, q)
@@ -415,9 +426,9 @@ class PickPlace(Node):
             p.velocities, p.accelerations = [], []
 
     def gripper(self, pos, what):
-        self.confirm(f"그리퍼 {'열기' if pos > 0.3 else '닫기'}")
+        self.confirm(f"그리퍼 {'열기' if pos > 0.5 * self.grip_open else '닫기'}")
         goal = FollowJointTrajectory.Goal()
-        goal.trajectory = JointTrajectory(joint_names=["rg2_finger_joint1"],
+        goal.trajectory = JointTrajectory(joint_names=[self.grip_joint],
                                           points=[JointTrajectoryPoint(positions=[pos],
                                                                        time_from_start=Duration(sec=1))])
         res = self.run_action(self.grip, goal, 15.0, what, "그리퍼")
@@ -476,7 +487,7 @@ class PickPlace(Node):
         """쥔 물체를 손끝(tool_tip)에 붙인다. depth = 손끝이 물체 윗면보다 내려간 깊이.
         tool_tip z축 = 접근(아래) 방향 → 물체 윗면은 z = -depth, 중심은 z = -depth + 높이/2"""
         a = AttachedCollisionObject(link_name=TIP,
-                                    touch_links=["rg2_leftfinger", "rg2_rightfinger", "rg2_hand", TIP])
+                                    touch_links=self.touch_links + [TIP])
         a.object.id, a.object.operation = "held_object", CollisionObject.ADD
         a.object.header.frame_id = TIP
         # 여유 1.2 cm: 인식 길이가 실제보다 짧게 나올 수 있다(누운 병 인식 17 cm ↔ 실제 약 20 cm)
@@ -513,10 +524,27 @@ class PickPlace(Node):
         except StepFailed:
             pass
 
+    def width_to_joint(self, width):
+        """손끝 벌림[m] → 그리퍼 관절값.
+           linear (RG2)  : 관절값이 벌림에 비례 (0 = 닫힘 · GRIPPER_OPEN = 최대 벌림)
+           jaw   (OMX-F) : 턱이 돌며 벌어진다 → 벌림 = 2 × 턱 길이 × sin(각도)"""
+        width = min(max(width, 0.0), float(self.g["max_open"]))
+        if self.grip_type == "jaw":
+            return math.asin(min(width / (2.0 * float(self.g["jaw_length"])), 1.0))
+        return GRIPPER_OPEN * width / float(self.g["max_open"])
+
+    def approach_open(self, width):
+        """다가갈 때 벌림. 기본 = '열기'(open_pct). gripper.approach_margin 이 있으면 물체 폭 + 그만큼만 연다
+        (OMX-F: 턱이 길어 최대로 열면 옆 물체를 친다 · RB5 는 안쪽 스위치 때문에 항상 최대로 연다)"""
+        m = self.g.get("approach_margin")
+        if m is None:
+            return self.grip_open
+        return min(self.grip_open, self.width_to_joint(width + float(m)))
+
     def close_target(self, width, squeeze):
         """잡기 목표 관절값: 물체 폭보다 squeeze 만큼 좁게 → 닿는 순간부터 설정한 힘으로 쥔다."""
         pct = min(100.0, 100.0 * max(0.0, width - squeeze) / float(self.g["max_open"]))
-        return GRIPPER_OPEN * pct / 100.0, pct
+        return self.width_to_joint(float(self.g["max_open"]) * pct / 100.0), pct
 
     # ================================================================ 잡는 법 (물체 치수 → 깊이·조임)
     def classify(self, obj):
@@ -628,7 +656,7 @@ class PickPlace(Node):
 
         self.say("MoveIt·컨트롤러·관절 상태 기다리는 중 …")
         t0 = time.time()
-        while not all(j in self.joints for j in ARM_JOINTS):
+        while not all(j in self.joints for j in self.arm_joints):
             if time.time() - t0 > 20:
                 raise StepFailed("/joint_states 가 들어오지 않음 — bringup 이 떠 있나요?")
             time.sleep(0.1)
@@ -667,7 +695,7 @@ class PickPlace(Node):
                      f"{(grip_z - advance - self.table_z) * 100:.1f} cm)")
 
             self.step(4, "물체 위로 이동 (그리퍼 열기)")
-            self.gripper(self.grip_open, "그리퍼 열기")
+            self.gripper(self.approach_open(obj.width), "그리퍼 열기")
             self.move_above(obj.top_center.x, obj.top_center.y, above_z, yaw, "물체 위 이동")
 
             self.step(5, f"하강 {(above_z - grip_z) * 100:.1f} cm")
@@ -702,7 +730,7 @@ class PickPlace(Node):
             rel_pct = min(float(self.g["open_pct"]),
                           100.0 * (obj.width + float(self.g["release_margin"])) / float(self.g["max_open"]))
             self.step(10, f"놓기 (그리퍼 {rel_pct:.0f} % 까지만 열기)")
-            self.gripper(GRIPPER_OPEN * rel_pct / 100.0, "놓기")
+            self.gripper(self.width_to_joint(float(self.g["max_open"]) * rel_pct / 100.0), "놓기")
             self.detach_held()
 
             # 놓기 확인: 조금 들고 손가락 사이를 본다. RG2 는 열렸는지 알려 주지 않는다
@@ -746,6 +774,7 @@ class PickPlace(Node):
 def main():
     ap = argparse.ArgumentParser(description="Pick and place 시나리오")
     ap.add_argument("--step", action="store_true", help="단계마다 Enter 로 진행")
+    ap.add_argument("--robot", choices=["rb5", "omx"], default="rb5", help="로봇 (launch 의 robot:= 과 같게)")
     ap.add_argument("--count", type=int, default=1, help="옮길 물체 개수")
     ap.add_argument("--shape", choices=["round", "box"], help="이 모양만 집는다")
     ap.add_argument("--log-dir", default="~/edu_pick_runs", help="시간 기록을 저장할 폴더")
@@ -755,7 +784,7 @@ def main():
 
     # Ctrl+C 를 rclpy 가 가로채면 통신이 먼저 끊겨 '정지 명령'을 못 보낸다 → 직접 처리
     rclpy.init(args=[sys.argv[0]] + ros_args, signal_handler_options=SignalHandlerOptions.NO)
-    node = PickPlace(step_mode=args.step, shape=args.shape)
+    node = PickPlace(step_mode=args.step, shape=args.shape, robot=args.robot)
     ex = MultiThreadedExecutor()
     ex.add_node(node)
     threading.Thread(target=ex.spin, daemon=True).start()

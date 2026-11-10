@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<!--
+  실습용 로봇 모델 (OMX 판): 테이블 + ROBOTIS OMX-F(5축 + 그리퍼) + USB 카메라
+
+  프레임 구조 (TF 트리)
+    world ─┬─ table                          (테이블 · 윗면 높이 = table.top_z)
+           ├─ link0 ─ … ─ link5 ─┬─ link6 / link7   (OMX-F · 그리퍼 턱 2개)
+           │                     └─ tool_tip   ★ 집기 기준점(손끝). z축 = 접근 방향, x축 = 닫히는 방향
+           └─ (camera_mount.parent) ─ usb_cam_link ─ usb_cam_optical_frame
+                 카메라 몸체 x축 = 보는 방향 · 광학 프레임 = z 앞, x 오른쪽, y 아래 (usb_cam 의 frame_id)
+
+  xacro 인자
+    use_fake_hardware  true = 가짜 하드웨어(로봇 없이 연습) / false = 실제 OMX (다이나믹셀 · 제어 보드 OpenRB-150 또는 U2D2)
+    port_name          제어 보드 USB 포트 (보통 /dev/ttyACM0)
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="edu_pick_omx">
+  <xacro:arg name="use_fake_hardware" default="true"/>
+  <xacro:arg name="port_name" default="/dev/ttyACM0"/>
+  <xacro:arg name="use_sim" default="false"/>   <!-- ROBOTIS ros2_control 매크로가 요구 (Gazebo 미사용 → 항상 false) -->
+  <xacro:arg name="scene_file" default="$(find edu_pick_description)/config/scene_omx.yaml"/>
+
+  <xacro:property name="scene" value="${xacro.load_yaml('$(arg scene_file)')}"/>
+  <xacro:property name="tb" value="${scene['table']}"/>
+  <xacro:property name="cam" value="${scene['camera_mount']}"/>
+  <xacro:property name="gr" value="${scene['gripper']}"/>
+  <xacro:property name="deg" value="${pi/180.0}"/>
+
+  <xacro:include filename="$(find edu_pick_description)/urdf/omx_f/omx_f_arm.urdf.xacro"/>
+  <xacro:include filename="$(find edu_pick_description)/urdf/omx_f/omx_f.ros2_control.xacro"/>
+
+  <link name="world"/>
+
+  <!-- ① 테이블 -->
+  <link name="table">
+    <visual>
+      <origin xyz="0 0 ${-tb['thickness']/2}"/>
+      <geometry><box size="${tb['size_xy'][0]} ${tb['size_xy'][1]} ${tb['thickness']}"/></geometry>
+      <material name="wood"><color rgba="0.76 0.62 0.45 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${-tb['thickness']/2}"/>
+      <geometry><box size="${tb['size_xy'][0]} ${tb['size_xy'][1]} ${tb['thickness']}"/></geometry>
+    </collision>
+  </link>
+  <joint name="table_joint" type="fixed">
+    <parent link="world"/>
+    <child link="table"/>
+    <origin xyz="${tb['center_xy'][0]} ${tb['center_xy'][1]} ${tb['top_z']}"/>
+  </joint>
+
+  <!-- ② OMX-F (ROBOTIS open_manipulator, Apache-2.0) — world = 로봇 바닥면 중심 -->
+  <xacro:omx_f prefix=""/>
+  <joint name="world_to_link0" type="fixed">
+    <parent link="world"/>
+    <child link="link0"/>
+    <origin xyz="0 0 0"/>
+  </joint>
+  <xacro:omx_f_system name="OMXFSystem" prefix="" port_name="$(arg port_name)"
+      use_sim="false" use_mock_hardware="$(arg use_fake_hardware)" mock_sensor_commands="false"/>
+
+  <!-- ③ 집기 기준점: 그리퍼를 '열기' 각도로 벌렸을 때 두 턱 끝의 가운데.
+       link5 기준: 턱 축 x = 0.0295 · 턱 길이 jaw_length · 두 턱 축의 가운데 y = -0.00165 (ROBOTIS end_effector_link 와 같음)
+       방향: tool_tip z = link5 +x (접근) · tool_tip x = link5 +y (닫히는 방향) -->
+  <link name="tool_tip"/>
+  <joint name="tool_tip_joint" type="fixed">
+    <parent link="link5"/>
+    <child link="tool_tip"/>
+    <origin xyz="${gr['tip_open']} -0.00165 0" rpy="${pi/2} 0 ${pi/2}"/>
+  </joint>
+
+  <!-- ④ USB 카메라 (외형은 상자로 근사 — 충돌 검사에도 쓴다) -->
+  <link name="usb_cam_link">
+    <visual>
+      <geometry><box size="0.03 0.08 0.03"/></geometry>
+      <material name="cam_gray"><color rgba="0.3 0.3 0.3 1"/></material>
+    </visual>
+    <collision><geometry><box size="0.03 0.08 0.03"/></geometry></collision>
+  </link>
+  <joint name="usb_cam_mount_joint" type="fixed">
+    <parent link="${cam['parent']}"/>
+    <child link="usb_cam_link"/>
+    <origin xyz="${cam['xyz'][0]} ${cam['xyz'][1]} ${cam['xyz'][2]}"
+            rpy="${cam['rpy_deg'][0]*deg} ${cam['rpy_deg'][1]*deg} ${cam['rpy_deg'][2]*deg}"/>
+  </joint>
+  <link name="usb_cam_optical_frame"/>
+  <joint name="usb_cam_optical_joint" type="fixed">
+    <parent link="usb_cam_link"/>
+    <child link="usb_cam_optical_frame"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+</robot>
