@@ -489,7 +489,10 @@ class PickPlace(Node):
             return []
         cx, cy = (float(v) for v in box["center_xy"])
         sx, sy = (float(v) for v in box["outer_size_xy"])
-        h, w = float(box["height"]), float(box.get("wall", 0.005))
+        # plan_margin_z: 계획에서만 벽을 이만큼 높게 본다 — 팔이 중력에 처져 계획보다 낮게 지나간다
+        #   (OMX 실기 2026-11-11: 벽 위 약 3 cm 로 계획한 경로에서 팔이 상자를 밀었다)
+        h = float(box["height"]) + float(box.get("plan_margin_z", 0.0))
+        w = float(box.get("wall", 0.005))
         yaw = math.radians(float(box.get("yaw_deg", 0.0)))
         c, s = math.cos(yaw), math.sin(yaw)
         walls = []
@@ -692,6 +695,35 @@ class PickPlace(Node):
             time.sleep(0.05)
         raise StepFailed("인식 결과가 들어오지 않음 — /edu_pick/objects 를 확인하세요")
 
+    COMPLETE_NOTES_BAD = ("그리퍼에 가려짐", "가장자리에 잘림")
+
+    def look_around(self, poses):
+        """대기위치(들)에서 보고 결과를 합친다. 반환 (물체 목록, {id: 본 자세 이름}).
+        OMX 손목 카메라는 화면 아래쪽 절반을 그리퍼 턱이 가려 한 자세로 2×2 를 다 못 본다
+        → poses 에 observe_* 가 있으면 그 자세들을 차례로 보고, 같은 물체(4 cm 안)는 온전히 보인 쪽 결과를 쓴다
+          (일부만 보인 덩어리는 중심이 1~2 cm 어긋난다 · 토마토 간격 6.5 cm 이상이라 4 cm 면 서로 안 섞인다)."""
+        views = ["observe"] + [v for v in poses if v.startswith("observe_")]   # scene 순서대로 (observe_mid · observe_near …)
+        merged, src = [], []
+        for v in views:
+            tag = "" if v == "observe" else f" ({v})"
+            self.step(2, "대기위치로 이동" + tag)
+            self.move_joints(poses[v], "대기위치")
+            if len(views) > 1:
+                self.step(3, "물체인식" + tag)
+            for o in self.detect():
+                whole = o.note not in self.COMPLETE_NOTES_BAD
+                self.say(f"     - {o.shape:5s} 폭 {o.width * 100:4.1f} cm  ({o.top_center.x:.3f}, {o.top_center.y:.3f})"
+                         + (f"  ✕ {o.note}" if o.note else ""))
+                same = [i for i, e in enumerate(merged)
+                        if math.hypot(e.top_center.x - o.top_center.x, e.top_center.y - o.top_center.y) < 0.04]
+                if not same:
+                    merged.append(o); src.append(v)
+                elif whole and merged[same[0]].note in self.COMPLETE_NOTES_BAD:
+                    merged[same[0]], src[same[0]] = o, v
+        for i, o in enumerate(merged):
+            o.id = f"obj_{i}"
+        return merged, {o.id: v for o, v in zip(merged, src)}
+
     def place_slots(self, n):
         """k 번째 물체를 놓을 xy — place.slots 가 있으면 그 목록(상자 안 칸), 없으면 하역 위치에서 step_xy 씩 옆으로."""
         pl = self.scene["place"]
@@ -765,11 +797,15 @@ class PickPlace(Node):
         done = 0
         for k in range(count):
             self.cur_cycle = k + 1
-            self.step(2, "대기위치로 이동")
-            self.move_joints(poses["observe"], "대기위치")
-
-            self.step(3, "물체인식")
-            seen = self.detect()
+            if any(k.startswith("observe_") for k in poses):
+                seen, seen_from = self.look_around(poses)
+                self.step(3, "물체인식 (두 자세 합침)")
+            else:
+                self.step(2, "대기위치로 이동")
+                self.move_joints(poses["observe"], "대기위치")
+                self.step(3, "물체인식")
+                seen = self.detect()
+                seen_from = {o.id: "observe" for o in seen}
             with self.timer("위치계산", "물체 선택"):
                 obj = self.choose(seen, all_slots)
             # 고른 물체 말고는 전부 장애물로: 인식한 다른 물체 + 이미 옮겨 놓은 물체
@@ -853,7 +889,7 @@ class PickPlace(Node):
             self.set_obstacles(list(self.placed))
 
             self.step("11+", "결과 확인 (대기위치에서 다시 인식)")
-            self.move_joints(poses["observe"], "대기위치")
+            self.move_joints(poses[seen_from.get(obj.id, "observe")], "대기위치")   # 그 물체를 봤던 자세에서
             left = [o for o in self.detect()
                     if math.hypot(o.top_center.x - obj.top_center.x, o.top_center.y - obj.top_center.y) < 0.03]
             if left:

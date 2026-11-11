@@ -68,13 +68,17 @@
     <origin xyz="${gr['tip_open']} -0.00165 0" rpy="${pi/2} 0 ${pi/2}"/>
   </joint>
 
-  <!-- ④ USB 카메라 (외형은 상자로 근사 — 충돌 검사에도 쓴다) -->
+  <!-- ④ USB 카메라 (외형은 상자로 근사 — 충돌 검사에도 쓴다)
+       크기 = 실제 보드(Innomaker U20CAM-720P 약 32 × 32 mm) + 렌즈 깊이. 원점(렌즈)에서 몸체는 뒤쪽으로 있다.
+       🔴 처음엔 3 × 8 × 3 cm 로 넉넉히 잡았는데, 카메라를 실제 위치(브래킷)로 옮긴 뒤 상자 구석 칸에서
+          어느 손목 방향으로도 벽·이웃 토마토와 겹쳐 놓기 하강이 막혔다(2026-11-11 실기) -->
   <link name="usb_cam_link">
     <visual>
-      <geometry><box size="0.03 0.08 0.03"/></geometry>
+      <origin xyz="-0.008 0 0"/>
+      <geometry><box size="0.020 0.036 0.036"/></geometry>
       <material name="cam_gray"><color rgba="0.3 0.3 0.3 1"/></material>
     </visual>
-    <collision><geometry><box size="0.03 0.08 0.03"/></geometry></collision>
+    <collision><origin xyz="-0.008 0 0"/><geometry><box size="0.020 0.036 0.036"/></geometry></collision>
   </link>
   <joint name="usb_cam_mount_joint" type="fixed">
     <parent link="${cam['parent']}"/>

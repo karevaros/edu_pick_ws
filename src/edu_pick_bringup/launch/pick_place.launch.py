@@ -250,7 +250,10 @@ def _setup_omx(context):
                                        "image_width": int(cam["width"]), "image_height": int(cam["height"]),
                                        "pixel_format": "mjpeg2rgb", "framerate": 15.0,
                                        "camera_name": "omx_cam", "frame_id": "usb_cam_optical_frame",
-                                       "camera_info_url": cam.get("calibration_url", "") or ""}]))
+                                       "camera_info_url": cam.get("calibration_url", "") or "",
+                                       # usb_cam 은 시작할 때 자기 기본값(brightness 50)을 카메라에 쓴다 → 화면이 하얗게 날아가
+                                       # 빨강 채도가 36 까지 떨어져 토마토가 안 잡혔다(2026-11-11 실기) → scene 값으로 지정
+                                       "brightness": int(cam.get("brightness", 0))}]))
     elif real:
         print("[pick_place] 카메라 끔(camera:=false) — 인식 결과가 나오지 않습니다")
     else:

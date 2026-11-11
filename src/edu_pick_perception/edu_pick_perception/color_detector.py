@@ -63,6 +63,10 @@ class ColorDetector(Node):
         TransformListener(self.tf, self)
         self.bridge = CvBridge()
         self._last, self._K, self._D, self._warned_k = None, None, None, False
+        # 손목 카메라 화면에서 그리퍼 턱이 차지하는 영역(정규화 [u, v] 다각형) — 그 안의 색은 버리고,
+        # 그 영역에 닿은 덩어리는 '가려짐'(일부만 보임 → 크기·위치가 틀림)으로 표시한다
+        self._occ_poly = self.cam_cfg.get("occlusion_polygon") or []
+        self._occ = None                          # (W, H, 영역, 닿음 판정용 영역)
         self.create_subscription(Image, self.get_parameter("image_topic").value,
                                  lambda m: setattr(self, "_last", m), 2)
         self.create_subscription(CameraInfo, self.get_parameter("info_topic").value, self._on_info, 2)
@@ -110,12 +114,15 @@ class ColorDetector(Node):
         hsv = cv2.cvtColor(cv2.GaussianBlur(bgr, (5, 5), 0), cv2.COLOR_BGR2HSV)
         k5 = np.ones((5, 5), np.uint8)
         c = self.cfg
+        occ, occ_near = self.occlusion(W, H)
 
         found, all_mask = [], np.zeros((H, W), np.uint8)
         for col in self.colors:
             mask = cv2.inRange(hsv, np.array(col["hsv"][0]), np.array(col["hsv"][1]))
             if "hsv2" in col:                       # 빨강은 색상환 양 끝(0 근처·179 근처)에 걸친다
                 mask |= cv2.inRange(hsv, np.array(col["hsv2"][0]), np.array(col["hsv2"][1]))
+            if occ is not None:                     # 턱 구멍 사이로 비친 색 등 — 그리퍼 영역 안은 버린다
+                mask[occ > 0] = 0
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k5)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5)
             all_mask |= mask
@@ -134,16 +141,35 @@ class ColorDetector(Node):
                 if not (c["roi_x"][0] < o.top_center.x < c["roi_x"][1] and c["roi_y"][0] < o.top_center.y < c["roi_y"][1]):
                     continue
                 x, y, w, h = cv2.boundingRect(cnt)
-                if (x <= 2 or y <= 2 or x + w >= W - 2 or y + h >= H - 2) and o.graspable:
+                # 잘림·가려짐은 다른 판정(거리 초과 등)보다 먼저 표시한다 — 일부만 보인 덩어리는 위치·크기 자체가 틀려서
+                #   pick_place 가 두 자세 결과를 합칠 때 '온전히 보인 쪽'을 고르는 기준이 된다 (11-11 가상: 잘린 뒷줄이 거리 초과로만 표시돼 온전한 것으로 취급됐다)
+                if x <= 2 or y <= 2 or x + w >= W - 2 or y + h >= H - 2:
                     o.graspable, o.note = False, "가장자리에 잘림"
+                elif occ_near is not None and np.any(occ_near[blob > 0]):
+                    o.graspable, o.note = False, "그리퍼에 가려짐"
                 found.append((o, cnt))
         for i, (o, _) in enumerate(found):
             o.id = f"obj_{i}"
+        if occ is not None:                         # 화면에 그리퍼 영역 테두리
+            cv2.polylines(bgr, [self._occ[4]], True, (255, 0, 255), 1)
         self._publish(found, msg.header.stamp, bgr, all_mask)
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         self.pub_timing.publish(String(data=json.dumps(
             {"stamp": stamp, "objects": len(found), "ms": {"합계": round((time.perf_counter() - t0) * 1000, 2)}},
             ensure_ascii=False)))
+
+    def occlusion(self, W, H):
+        """그리퍼 영역 마스크(영역, 영역+여유 2 px). 설정이 없으면 (None, None)."""
+        if len(self._occ_poly) < 3:
+            return None, None
+        if self._occ is None or self._occ[:2] != (W, H):
+            pts = np.array([[round(u * (W - 1)), round(v * (H - 1))] for u, v in self._occ_poly], np.int32)
+            m = np.zeros((H, W), np.uint8)
+            cv2.fillPoly(m, [pts], 255)
+            # 닿음 판정 여유 2 px — 6 px 였을 때 온전히 보인 토마토(round 5.0 cm)를 '가려짐'으로 버렸다(11-11 실기).
+            #   다각형 자체가 실제 턱보다 약 6 px 위로 그려져 있다
+            self._occ = (W, H, m, cv2.dilate(m, np.ones((5, 5), np.uint8)), pts.reshape(-1, 1, 2))
+        return self._occ[2], self._occ[3]
 
     def locate(self, us, vs, R, cam, fx, fy, cx, cy, col, sphere):
         """덩어리 픽셀 → 광선 → 평면과의 교점 → DetectedObject.

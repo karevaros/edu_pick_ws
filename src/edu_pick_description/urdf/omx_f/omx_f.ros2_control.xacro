@@ -172,8 +172,9 @@
         <param name="Position D Gain">1000</param>
         <param name="Profile Velocity">50</param>
         <param name="Profile Acceleration">25</param>
-        <param name="Current Limit">600</param>
-        <param name="Goal Current">600</param>
+        <!-- 11-11 실기: 600 mA 로는 토마토(5 cm)를 들고 옮기다 흘렸다 → 900 (XL330-M288 최대 1750 · 오래 쥐면 발열 주의) -->
+        <param name="Current Limit">900</param>
+        <param name="Goal Current">900</param>
         <param name="Shutdown">21</param>
       </gpio>
 

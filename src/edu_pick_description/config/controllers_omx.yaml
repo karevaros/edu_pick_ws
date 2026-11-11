@@ -25,10 +25,11 @@ arm_controller:
       stopped_velocity_tolerance: 0.02
       goal_time: 1.0
       joint1: {trajectory: 0.25, goal: 0.06}
-      joint2: {trajectory: 0.25, goal: 0.06}
-      joint3: {trajectory: 0.25, goal: 0.06}
-      joint4: {trajectory: 0.25, goal: 0.06}
-      joint5: {trajectory: 0.25, goal: 0.06}
+      # joint2~4: 팔을 뻗거나 들면 중력에 0.06~0.08 rad 처진다(I 게인 0 · 11-11 실기 joint3 0.081·joint4 0.063) → 도착 판정만 완화
+      joint2: {trajectory: 0.25, goal: 0.10}
+      joint3: {trajectory: 0.25, goal: 0.10}
+      joint4: {trajectory: 0.25, goal: 0.10}
+      joint5: {trajectory: 0.50, goal: 0.06}   # 손목 회전: 0→84° 를 한 번에 돌 때 0.25 rad 넘게 뒤처져 중단(11-11 실기) — 늦어도 위험하지 않다
 
 gripper_controller:
   ros__parameters:
