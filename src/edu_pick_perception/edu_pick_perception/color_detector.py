@@ -113,7 +113,12 @@ class ColorDetector(Node):
             return
         t0 = time.perf_counter()
         try:
-            t = self.tf.lookup_transform(self.world, msg.header.frame_id, Time())
+            # 영상이 찍힌 시각의 카메라 자세로 계산한다 — 최신 TF 를 쓰면 팔이 움직이는 중·직후에 찍힌 영상이
+            #   지금 자세로 투영돼 물체가 엉뚱한 곳에 나온다(11-12 실기: 옮긴 물체를 '원래 자리에 그대로'로 오판)
+            try:
+                t = self.tf.lookup_transform(self.world, msg.header.frame_id, Time.from_msg(msg.header.stamp))
+            except Exception:
+                t = self.tf.lookup_transform(self.world, msg.header.frame_id, Time())
         except Exception as e:
             self.get_logger().warn(f"TF 없음 {self.world}←{msg.header.frame_id}: {e}", throttle_duration_sec=5.0)
             return

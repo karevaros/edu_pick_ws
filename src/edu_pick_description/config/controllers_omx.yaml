@@ -22,7 +22,7 @@ arm_controller:
     #   trajectory 0.25 rad: 0.15 로는 실기에서 관절 4 가 추종 지연 0.150 rad 로 중단됐다(관절 3 이 3 초에 90° 도는 궤적)
     #   goal 0.06 rad: 팔을 앞으로 뻗으면 중력으로 관절 3 이 0.043 rad 처진 채 멈춘다(ROBOTIS 설정은 I 게인 0) — 손끝 약 7 mm
     constraints:
-      stopped_velocity_tolerance: 0.02
+      stopped_velocity_tolerance: 0.10   # 11-12: 0.02 → 0.10 — 손목(joint5)이 멈춘 뒤에도 최대 0.048 rad/s 로 떨려 "정지" 판정이 안 나 중단(-4/-6 · 위치 오차는 허용 안)
       goal_time: 1.0
       joint1: {trajectory: 0.25, goal: 0.06}
       # joint2~4: 팔을 뻗거나 들면 중력에 0.06~0.08 rad 처진다(I 게인 0 · 11-11 실기 joint3 0.081·joint4 0.063) → 도착 판정만 완화

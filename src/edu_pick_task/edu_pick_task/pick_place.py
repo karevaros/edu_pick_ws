@@ -381,11 +381,17 @@ class PickPlace(Node):
         p.orientation = down_quat(yaw)
         self.move_joints(self.solve_ik(p), what)
 
-    def move_linear(self, dz, what):
-        """손끝을 현재 자세 그대로 수직으로 dz[m] 만큼 직선 이동 (+ 위 / - 아래)."""
+    def move_linear(self, dz, what, z_goal=None):
+        """손끝을 현재 자세 그대로 수직으로 dz[m] 만큼 직선 이동 (+ 위 / - 아래).
+        z_goal 을 주면 dz 대신 그 높이(world z)까지 — 팔이 처지는 로봇(OMX)에서 상대 이동을 이어 하면 처짐이
+        이동마다 쌓인다(11-12 실기: 놓고 두 번 올라온 손끝이 계획 0.09 → 실제 0.052 m → 놓은 토마토 모델과 겹쳐 -2)"""
         start = self.tip_pose()
         goal = Pose()
         goal.position.x, goal.position.y = start.position.x, start.position.y
+        if z_goal is not None:
+            dz = float(z_goal) - start.position.z
+            if abs(dz) < 0.003:
+                return
         goal.position.z = start.position.z + dz
         goal.orientation = start.orientation
 
@@ -514,10 +520,18 @@ class PickPlace(Node):
             co = CollisionObject(id=it["id"], operation=CollisionObject.ADD)
             co.header.frame_id = WORLD
             pad = it.get("pad", float(self.m.get("obstacle_pad", self.PAD)))
-            co.primitives = [self._primitive(it["shape"], it["width"], it["length"], it["height"], pad)]
+            # 공(토마토: 인식 높이 = 폭)은 공으로 넣는다(motion.round_as_sphere) — 원기둥이면 윗모서리가 실제보다 튀어나와
+            #   옆에서 내려오는 카메라 상자와 4~6 mm 겹쳐 하강이 막혔다(11-12 실기 3건)
+            ball = (self.m.get("round_as_sphere") and it["shape"] == "round"
+                    and abs(it["height"] - it["width"]) < 0.002)
             p = Pose()
             p.position.x, p.position.y = float(it["x"]), float(it["y"])
-            p.position.z = float(it["bottom"]) + (it["height"] + pad) / 2
+            if ball:
+                co.primitives = [SolidPrimitive(type=SolidPrimitive.SPHERE, dimensions=[it["width"] / 2 + pad])]
+                p.position.z = float(it["bottom"]) + it["height"] / 2
+            else:
+                co.primitives = [self._primitive(it["shape"], it["width"], it["length"], it["height"], pad)]
+                p.position.z = float(it["bottom"]) + (it["height"] + pad) / 2
             yaw = 0.0 if it["shape"] == "round" or math.isnan(it["yaw"]) else it["yaw"]
             p.orientation.z, p.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
             co.primitive_poses = [p]
@@ -695,7 +709,10 @@ class PickPlace(Node):
         t_req = time.time() + 1.0                   # 멈춘 뒤 1초 이후 결과
         while time.time() < t_req + timeout:
             if self.objects is not None and self.objects_time > t_req:
-                return list(self.objects.objects)
+                # 받은 시각이 아니라 '영상이 찍힌 시각'이 멈춘 뒤여야 한다(카메라·인식 지연만큼 옛 영상이 늦게 온다)
+                st = self.objects.header.stamp.sec + self.objects.header.stamp.nanosec * 1e-9
+                if st > t_req - 0.5 or abs(st - time.time()) > 5.0:   # 시계가 다른 카메라(가상 등)는 받은 시각으로
+                    return list(self.objects.objects)
             time.sleep(0.05)
         raise StepFailed("인식 결과가 들어오지 않음 — /edu_pick/objects 를 확인하세요")
 
@@ -820,29 +837,40 @@ class PickPlace(Node):
                 self.step(3, "물체인식")
                 seen = self.detect()
                 seen_from = {o.id: "observe" for o in seen}
-            with self.timer("위치계산", "물체 선택"):
-                obj = self.choose(seen, all_slots)
-            # 고른 물체 말고는 전부 장애물로: 인식한 다른 물체 + 이미 옮겨 놓은 물체
-            others = [self.as_item(o) for o in seen if obj is None or o.id != obj.id]
-            self.set_obstacles(others + self.placed)
-            self.say(f"   → MoveIt 장면 장애물 {len(others) + len(self.placed)}개 (인식 {len(others)} · 옮겨 놓은 것 {len(self.placed)})")
+            # 고른 물체로 내려갈 길이 없으면(이웃에 둘러싸인 가운데 토마토 — 카메라 상자가 옆 토마토에 걸림 · 11-12 실기)
+            #   그 물체는 이번 바퀴에서 빼고 다음 후보를 집는다 — 바깥 것을 먼저 치우면 다음 바퀴에 길이 열린다
+            skipped, obj = [], None
+            while True:
+                with self.timer("위치계산", "물체 선택"):
+                    obj = self.choose([o for o in seen if o.id not in skipped], all_slots)
+                # 고른 물체 말고는 전부 장애물로: 인식한 다른 물체 + 이미 옮겨 놓은 물체
+                others = [self.as_item(o) for o in seen if obj is None or o.id != obj.id]
+                self.set_obstacles(others + self.placed)
+                self.say(f"   → MoveIt 장면 장애물 {len(others) + len(self.placed)}개 (인식 {len(others)} · 옮겨 놓은 것 {len(self.placed)})")
+                if obj is None:
+                    break
+                with self.timer("위치계산", "잡는 높이·방향"):
+                    gp = self.plan_grasp(obj, [o for o in seen if o.id != obj.id])
+                yaw, grip_z, advance = gp["yaw"], gp["grip_z"], gp["advance"]
+                above_z = obj.top_center.z + float(m["approach_height"])
+                self.say(f"   → 선택: {obj.id} ({obj.shape}) · 집기 방향 {math.degrees(yaw):.0f}° · "
+                         f"손끝 높이 {grip_z:.3f} m (닫으면 {advance * 100:.1f} cm 더 내려감 → 테이블 위 "
+                         f"{(grip_z - advance - self.table_z) * 100:.1f} cm)")
+                try:
+                    self.step(4, "물체 위로 이동 (그리퍼 열기)")
+                    self.gripper(self.approach_open(obj.width), "그리퍼 열기")
+                    self.move_above(obj.top_center.x, obj.top_center.y, above_z, yaw, "물체 위 이동")
+                    self.step(5, f"하강 {(above_z - grip_z) * 100:.1f} cm")
+                    self.move_linear(grip_z - above_z, "하강")
+                    break
+                except StepFailed as e:
+                    if not any(k in str(e) for k in ("직선 경로", "경로 계획", "IK")):
+                        raise
+                    self.say(f"   ✕ {obj.id} 로 가는 길이 없음({e}) — 다른 물체부터")
+                    skipped.append(obj.id)
             if obj is None:
                 self.say("   → 집을 수 있는 물체가 없습니다. 종료합니다.")
                 break
-            with self.timer("위치계산", "잡는 높이·방향"):
-                gp = self.plan_grasp(obj, [o for o in seen if o.id != obj.id])
-            yaw, grip_z, advance = gp["yaw"], gp["grip_z"], gp["advance"]
-            above_z = obj.top_center.z + float(m["approach_height"])
-            self.say(f"   → 선택: {obj.id} ({obj.shape}) · 집기 방향 {math.degrees(yaw):.0f}° · "
-                     f"손끝 높이 {grip_z:.3f} m (닫으면 {advance * 100:.1f} cm 더 내려감 → 테이블 위 "
-                     f"{(grip_z - advance - self.table_z) * 100:.1f} cm)")
-
-            self.step(4, "물체 위로 이동 (그리퍼 열기)")
-            self.gripper(self.approach_open(obj.width), "그리퍼 열기")
-            self.move_above(obj.top_center.x, obj.top_center.y, above_z, yaw, "물체 위 이동")
-
-            self.step(5, f"하강 {(above_z - grip_z) * 100:.1f} cm")
-            self.move_linear(grip_z - above_z, "하강")
 
             close_pos, close_pct = self.close_target(obj.width, gp["squeeze"])
             self.step(6, f"잡기 (물체 폭 {obj.width * 100:.1f} cm → 그리퍼 목표 {close_pct:.0f} %)")
@@ -854,12 +882,12 @@ class PickPlace(Node):
             #   낮게 남는다 → 다음 이동의 출발 상태가 무효(-2). lift_extra 만큼 더 올려 보고, 손이 안 닿으면 원래 높이로
             extra = float(m.get("lift_extra", 0.0))
             try:
-                self.move_linear(above_z - grip_z + extra, "상승")
+                self.move_linear(0, "상승", z_goal=above_z + extra)
             except StepFailed:
                 if extra <= 0:
                     raise
                 self.say(f"   → {extra * 100:.0f} cm 더 올리기는 손이 닿지 않음 — 원래 높이로")
-                self.move_linear(above_z - grip_z, "상승")
+                self.move_linear(0, "상승", z_goal=above_z)
 
             # 놓을 때 손끝 높이 = 잡을 때 손끝이 물체 바닥에서 떨어진 높이 + 여유
             tall = gp["kind"] == "tall"
@@ -889,7 +917,7 @@ class PickPlace(Node):
                         self.say(f"   → 하강이 막힘 — 손목 {math.degrees(place_yaw) + d:.0f}° 로 다시")
                         self.fixed_yaw = True
                         self.move_above(place_xy[0], place_xy[1], place_above, place_yaw + math.radians(d), "하역 위치 이동")
-                    self.move_linear(release_z - place_above, "하강")
+                    self.move_linear(0, "하강", z_goal=release_z)
                     break
                 except StepFailed as e:
                     if i == len(alts) - 1 or "직선 경로" not in str(e):
@@ -906,7 +934,7 @@ class PickPlace(Node):
             #   (열기 명령이 접수됐는데 안 열려 물체를 쥔 채 돌아올 수 있다 → 다시 연다)
             lift = float(m["check_lift"])
             self.step(11, f"상승 ({lift * 100:.0f} cm 들고 놓였는지 확인)")
-            self.move_linear(lift, "상승")
+            self.move_linear(0, "상승", z_goal=release_z + lift)
             thr = int(self.g["held_points"])
             for retry in range(3):
                 n = self.held_points()
@@ -917,7 +945,7 @@ class PickPlace(Node):
                     raise StepFailed(f"놓기 실패 — 그리퍼를 다시 열어도 물체가 손에 남아 있습니다(점 {n}개). 사람이 확인하세요")
                 self.say(f"   ✕ 물체가 아직 손에 있음(점 {n}개) — 열기 다시 {retry + 1}/2")
                 self.gripper(self.grip_open, "다시 열기")
-            self.move_linear(place_above - release_z - lift, "상승")
+            self.move_linear(0, "상승", z_goal=place_above)
             # 턱을 모은다 — 벌린 턱(link6)이 계획용으로 높인 상자 벽과 2 mm 겹쳐 다음 이동의 출발 상태가 무효(-2)였다
             #   (11-12 실기 셋째 칸: 처짐으로 손끝이 벽 쪽 1 cm 밀림 · 닫으면 유효)
             if self.g.get("observe_open"):
@@ -934,7 +962,8 @@ class PickPlace(Node):
             left = [o for o in self.detect()
                     if math.hypot(o.top_center.x - obj.top_center.x, o.top_center.y - obj.top_center.y) < 0.03]
             if left:
-                self.say("   ✕ 물체가 원래 자리에 그대로 있습니다 — 잡기 실패")
+                self.say("   ✕ 물체가 원래 자리에 그대로 있습니다 — 잡기 실패 (본 것: "
+                         + ", ".join(f"{o.shape} {o.width * 100:.1f} cm ({o.top_center.x:.3f}, {o.top_center.y:.3f}) {o.note}" for o in left) + ")")
             else:
                 self.say("   ✓ 원래 자리에서 사라졌습니다 — 옮기기 성공")
                 done += 1
