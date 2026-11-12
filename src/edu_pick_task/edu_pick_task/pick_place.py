@@ -381,7 +381,7 @@ class PickPlace(Node):
         p.orientation = down_quat(yaw)
         self.move_joints(self.solve_ik(p), what)
 
-    def move_linear(self, dz, what, z_goal=None):
+    def move_linear(self, dz, what, z_goal=None, avoid=True):
         """손끝을 현재 자세 그대로 수직으로 dz[m] 만큼 직선 이동 (+ 위 / - 아래).
         z_goal 을 주면 dz 대신 그 높이(world z)까지 — 팔이 처지는 로봇(OMX)에서 상대 이동을 이어 하면 처짐이
         이동마다 쌓인다(11-12 실기: 놓고 두 번 올라온 손끝이 계획 0.09 → 실제 0.052 m → 놓은 토마토 모델과 겹쳐 -2)"""
@@ -402,7 +402,7 @@ class PickPlace(Node):
         req.waypoints = [goal]
         req.max_step = 0.005            # 5 mm 마다 IK
         req.jump_threshold = 0.0
-        req.avoid_collisions = True
+        req.avoid_collisions = bool(avoid)
         with self.timer("경로계획", f"직선 경로({what})"):
             res = self.wait(self.cart.call_async(req), 10.0, what)
         if res.fraction < 0.99:
@@ -553,7 +553,11 @@ class PickPlace(Node):
         a.object.id, a.object.operation = "held_object", CollisionObject.ADD
         a.object.header.frame_id = TIP
         # 여유 1.2 cm: 인식 길이가 실제보다 짧게 나올 수 있다(누운 병 인식 17 cm ↔ 실제 약 20 cm)
-        a.object.primitives = [self._primitive(obj.shape, obj.width, obj.length, obj.height, 0.012)]
+        if self.m.get("round_as_sphere") and obj.shape == "round" and abs(obj.height - obj.width) < 0.002:
+            # 공(토마토)은 공으로 · 여유 4 mm — 원기둥 + 1.2 cm 는 6.5 cm 옆 칸 토마토 모델과 겹쳐 하강이 막혔다(11-12 실기)
+            a.object.primitives = [SolidPrimitive(type=SolidPrimitive.SPHERE, dimensions=[obj.width / 2 + 0.004])]
+        else:
+            a.object.primitives = [self._primitive(obj.shape, obj.width, obj.length, obj.height, 0.012)]
         p = Pose()
         p.position.z = -depth + obj.height / 2
         p.orientation.w = 1.0
@@ -630,6 +634,7 @@ class PickPlace(Node):
           · 손끝만 봄 → 그리퍼 몸통(link5)의 한쪽 돌출부(카메라 쪽, 약 6.6 cm)가 옆 토마토 윗부분에 닿음
             ⇒ 돌출부는 한쪽에만 있어 0~360° 를 본다(gripper.side_reach)"""
         self.fixed_yaw = False
+        self.yaw_ranked = []          # 여유가 큰 순서의 손목 방향들 (하강이 막혔을 때 차례로 시도)
         side = [float(v) for v in self.g.get("side_reach", [])]   # 손끝 y축(tool y) 쪽 돌출 거리들 [m]
         if not discs and not self.fixtures:
             return yaw
@@ -653,6 +658,7 @@ class PickPlace(Node):
             return min(d) if d else 1.0
         span = 360 if side else 180
         best = max((math.radians(d) for d in range(0, span, 15)), key=clearance)
+        self.yaw_ranked = sorted((math.radians(d) for d in range(0, span, 15)), key=clearance, reverse=True)
         now = max(clearance(yaw), clearance(yaw + math.pi))     # IK 는 yaw·yaw+180° 중 덜 도는 쪽을 쓴다
         if clearance(best) > now + 0.005:
             self.say(f"   → 손목 {math.degrees(best):.0f}° — {what}에서 멀어지게 (여유 {now * 100:.1f} → {clearance(best) * 100:.1f} cm)")
@@ -908,19 +914,25 @@ class PickPlace(Node):
             self.move_above(place_xy[0], place_xy[1], place_above, place_yaw, "하역 위치 이동")
 
             self.step(9, f"하강 {(place_above - release_z) * 100:.1f} cm")
-            # 고른 손목 방향(위에서 본 2D 여유)으로 하강이 막히면 ±15°·±30° 로 바꿔 다시 — 실기 넷째 칸: 60° 는 카메라 상자가
-            #   옆 칸 토마토 모델(원기둥) 윗모서리에 걸려 67 %, 45° 는 통과(11-12)
-            alts = [0] if not self.fixed_yaw else [0, -15, 15, -30, 30]
-            for i, d in enumerate(alts):
+            # 고른 손목 방향(위에서 본 2D 여유)으로 하강이 막히면 여유가 큰 순서로 다른 방향을 시도한다(최대 6개)
+            #   — 2D 여유 계산은 카메라 상자의 높이·쥔 물체를 모른다. 실기 넷째 칸: 60° 는 67 %, 45° 는 통과(11-12)
+            #   (±15°·±30° 만 보던 첫 판은 120° 근처 4개가 전부 막혀 중단됐다)
+            def norm(a):
+                return (a + math.pi) % (2 * math.pi) - math.pi
+            tries = [place_yaw] + [a for a in getattr(self, "yaw_ranked", [])
+                                   if abs(norm(a - place_yaw)) > math.radians(5)][:6]
+            if not self.fixed_yaw:
+                tries = tries[:1]
+            for i, a in enumerate(tries):
                 try:
-                    if d:
-                        self.say(f"   → 하강이 막힘 — 손목 {math.degrees(place_yaw) + d:.0f}° 로 다시")
+                    if i:
+                        self.say(f"   → 하강이 막힘 — 손목 {math.degrees(norm(a)) % 360:.0f}° 로 다시")
                         self.fixed_yaw = True
-                        self.move_above(place_xy[0], place_xy[1], place_above, place_yaw + math.radians(d), "하역 위치 이동")
+                        self.move_above(place_xy[0], place_xy[1], place_above, a, "하역 위치 이동")
                     self.move_linear(0, "하강", z_goal=release_z)
                     break
                 except StepFailed as e:
-                    if i == len(alts) - 1 or "직선 경로" not in str(e):
+                    if i == len(tries) - 1 or not any(k in str(e) for k in ("직선 경로", "경로 계획", "IK")):
                         raise
 
             # 놓을 때는 물체 폭 + release_margin 만큼만 연다 (옆 칸 물체를 손가락으로 치지 않게)
@@ -934,7 +946,16 @@ class PickPlace(Node):
             #   (열기 명령이 접수됐는데 안 열려 물체를 쥔 채 돌아올 수 있다 → 다시 연다)
             lift = float(m["check_lift"])
             self.step(11, f"상승 ({lift * 100:.0f} cm 들고 놓였는지 확인)")
-            self.move_linear(0, "상승", z_goal=release_z + lift)
+            try:
+                self.move_linear(0, "상승", z_goal=release_z + lift)
+            except StepFailed as e:
+                if "직선 경로" not in str(e):
+                    raise
+                # 놓으려고 연 턱이 모델상 벽·옆 물체에 닿아 출발 상태가 무효(경로 0 %) — 방금 내려온 길을 그대로 올라가는
+                #   것이므로 충돌 검사 없이 수직으로 뺀다(11-12 실기 셋째 칸 · 가상 넷째 칸)
+                self.say("   → 연 턱이 모델상 닿아 있음 — 내려온 길로 그대로 올라갑니다(충돌 검사 생략)")
+                self.move_linear(0, "상승", z_goal=release_z + lift, avoid=False)
+                self.move_linear(0, "상승", z_goal=place_above, avoid=False)
             thr = int(self.g["held_points"])
             for retry in range(3):
                 n = self.held_points()
@@ -959,8 +980,11 @@ class PickPlace(Node):
             self.step("11+", "결과 확인 (대기위치에서 다시 인식)")
             self.move_joints(poses[seen_from.get(obj.id, "observe")], "대기위치")   # 그 물체를 봤던 자세에서
             self.open_to_observe()
+            # 같은 자리에 '비슷한 크기'가 보여야 그대로 있는 것이다 — 토마토가 가리고 있던 무늬·꼭지 조각(1.4 cm)이
+            #   드러나 잡히면 '그대로 있음'으로 오판했다(11-12 실기: 옮긴 3알을 전부 실패로 셈)
             left = [o for o in self.detect()
-                    if math.hypot(o.top_center.x - obj.top_center.x, o.top_center.y - obj.top_center.y) < 0.03]
+                    if math.hypot(o.top_center.x - obj.top_center.x, o.top_center.y - obj.top_center.y) < 0.03
+                    and o.width > 0.6 * obj.width]
             if left:
                 self.say("   ✕ 물체가 원래 자리에 그대로 있습니다 — 잡기 실패 (본 것: "
                          + ", ".join(f"{o.shape} {o.width * 100:.1f} cm ({o.top_center.x:.3f}, {o.top_center.y:.3f}) {o.note}" for o in left) + ")")
