@@ -32,7 +32,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import Point
 from rclpy.node import Node
 from rclpy.time import Time
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, JointState
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import MarkerArray
@@ -67,6 +67,13 @@ class ColorDetector(Node):
         # 그 영역에 닿은 덩어리는 '가려짐'(일부만 보임 → 크기·위치가 틀림)으로 표시한다
         self._occ_poly = self.cam_cfg.get("occlusion_polygon") or []
         self._occ = None                          # (W, H, 영역, 닿음 판정용 영역)
+        # 턱을 이 각도[rad] 이상 벌리면 턱이 화면 밖으로 나간다 → 가림 영역을 쓰지 않는다
+        #   (OMX-F 실기 11-11 촬영: 0.8 rad 에서 턱이 화면에 전혀 없음 · 닫으면 화면의 32 %)
+        self._occ_clear = self.cam_cfg.get("occlusion_clear_above")
+        self._grip_joint = scene["gripper"].get("joint")
+        self._grip_pos = None
+        if self._occ_clear is not None:
+            self.create_subscription(JointState, "/joint_states", self._on_js, 10)
         self.create_subscription(Image, self.get_parameter("image_topic").value,
                                  lambda m: setattr(self, "_last", m), 2)
         self.create_subscription(CameraInfo, self.get_parameter("info_topic").value, self._on_info, 2)
@@ -77,6 +84,10 @@ class ColorDetector(Node):
         self.create_timer(1.0 / float(self.get_parameter("rate").value), self.process)
         self.get_logger().info(f"물체 인식(USB 카메라·색) 시작 — 입력 {self.get_parameter('image_topic').value} · "
                                f"색 {[c['name'] for c in self.colors]}")
+
+    def _on_js(self, msg):
+        if self._grip_joint in msg.name:
+            self._grip_pos = msg.position[msg.name.index(self._grip_joint)]
 
     def _on_info(self, msg):
         K = np.array(msg.k, float).reshape(3, 3)
@@ -162,6 +173,8 @@ class ColorDetector(Node):
         """그리퍼 영역 마스크(영역, 영역+여유 2 px). 설정이 없으면 (None, None)."""
         if len(self._occ_poly) < 3:
             return None, None
+        if self._occ_clear is not None and self._grip_pos is not None and self._grip_pos >= float(self._occ_clear):
+            return None, None                     # 턱을 활짝 벌려 화면에 없다
         if self._occ is None or self._occ[:2] != (W, H):
             pts = np.array([[round(u * (W - 1)), round(v * (H - 1))] for u, v in self._occ_poly], np.int32)
             m = np.zeros((H, W), np.uint8)

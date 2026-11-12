@@ -629,7 +629,11 @@ class PickPlace(Node):
         def clearance(a):
             pts = [(x + k * half * math.cos(a), y + k * half * math.sin(a)) for k in (-1, 1)]
             # 손끝 y축 = (sin a, −cos a) — 위에서 아래로 집는 자세에서 tool z = −z, tool x = (cos a, sin a)
-            pts += [(x + r * math.sin(a), y - r * math.cos(a)) for r in side]
+            # 돌출부는 '선분' — 양 끝만 보면 벽을 넘어간 방향이 벽에서 멀다고 나온다(11-12 가상: 셋째 칸에서
+            #   카메라가 로봇 쪽 벽 위로 가는 방향을 골라 하강 33 %) → 5 mm 간격으로 채워 본다
+            if side:
+                n = max(2, int((side[-1] - side[0]) / 0.005) + 1)
+                pts += [(x + r * math.sin(a), y - r * math.cos(a)) for r in np.linspace(side[0], side[-1], n)]
             d = [math.hypot(px - cx, py - cy) - rr for px, py in pts for cx, cy, rr in discs]
             d += [wall_dist(px, py, w) for px, py in pts for w in self.fixtures]
             return min(d) if d else 1.0
@@ -697,6 +701,12 @@ class PickPlace(Node):
 
     COMPLETE_NOTES_BAD = ("그리퍼에 가려짐", "가장자리에 잘림")
 
+    def open_to_observe(self):
+        """손목 카메라가 턱에 가리지 않게, 보기 전에 그리퍼를 끝까지 연다 (gripper.observe_open).
+        OMX-F: 닫힌 턱은 화면 아래 32 % 를 가리지만 0.8 rad 로 열면 화면에서 완전히 벗어난다(11-11 실기 촬영)."""
+        if self.g.get("observe_open"):
+            self.gripper(self.grip_open, "그리퍼 열기(카메라 시야)")
+
     def look_around(self, poses):
         """대기위치(들)에서 보고 결과를 합친다. 반환 (물체 목록, {id: 본 자세 이름}).
         OMX 손목 카메라는 화면 아래쪽 절반을 그리퍼 턱이 가려 한 자세로 2×2 를 다 못 본다
@@ -708,6 +718,7 @@ class PickPlace(Node):
             tag = "" if v == "observe" else f" ({v})"
             self.step(2, "대기위치로 이동" + tag)
             self.move_joints(poses[v], "대기위치")
+            self.open_to_observe()
             if len(views) > 1:
                 self.step(3, "물체인식" + tag)
             for o in self.detect():
@@ -792,6 +803,8 @@ class PickPlace(Node):
         self.clear_leftovers()
         self.set_obstacles(list(self.placed))
         self.step(1, "초기위치로 이동")
+        if self.g.get("observe_open"):     # 앞 실행이 턱을 연 채 끝났을 수 있다 — 접은 자세에서 연 턱은 받침과 겹친다
+            self.gripper(0.0, "그리퍼 닫기")
         self.move_joints(poses["home"], "초기위치")
 
         done = 0
@@ -803,6 +816,7 @@ class PickPlace(Node):
             else:
                 self.step(2, "대기위치로 이동")
                 self.move_joints(poses["observe"], "대기위치")
+                self.open_to_observe()
                 self.step(3, "물체인식")
                 seen = self.detect()
                 seen_from = {o.id: "observe" for o in seen}
@@ -890,6 +904,7 @@ class PickPlace(Node):
 
             self.step("11+", "결과 확인 (대기위치에서 다시 인식)")
             self.move_joints(poses[seen_from.get(obj.id, "observe")], "대기위치")   # 그 물체를 봤던 자세에서
+            self.open_to_observe()
             left = [o for o in self.detect()
                     if math.hypot(o.top_center.x - obj.top_center.x, o.top_center.y - obj.top_center.y) < 0.03]
             if left:
@@ -899,6 +914,8 @@ class PickPlace(Node):
                 done += 1
 
         self.step(12, "초기위치로 이동")
+        if self.g.get("observe_open"):
+            self.gripper(0.0, "그리퍼 닫기")
         self.move_joints(poses["home"], "초기위치")
         self.set_obstacles([])
         self.say(f"\n완료 — {done}개 옮김")

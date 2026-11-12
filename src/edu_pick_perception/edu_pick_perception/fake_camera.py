@@ -73,6 +73,7 @@ class FakeCamera(Node):
                 d["sx"], d["sy"], d["h"] = (float(v) for v in o["size"])
             else:
                 d["r"], d["h"] = float(o["size"][0]) / 2, float(o["size"][1])
+                d["ball"] = bool(o.get("ball", False))   # 공(토마토) — 원기둥으로 그리면 색 인식이 폭을 0.6~0.8 cm 크게 본다
             self.objs.append(d)
         self.held = None          # (물체, 손끝 기준 위치 오프셋, 손끝 기준 방향 오프셋)
         self.tried = False        # 이번 닫기에서 이미 집기 판정을 했나
@@ -236,6 +237,14 @@ class FakeCamera(Node):
                     tmin = np.nanmax(np.minimum(t1, t2), axis=1)
                     tmax = np.nanmin(np.maximum(t1, t2), axis=1)
                     t = np.where((tmax >= tmin) & (tmin > 0), tmin, np.inf)
+                elif o.get("ball"):                 # 공: 중심 (0, 0, r)
+                    r = o["r"]
+                    oc = lo - np.array([0.0, 0.0, r])
+                    a = np.sum(ld * ld, axis=1)
+                    b = 2 * (ld @ oc)
+                    disc = b * b - 4 * a * (oc @ oc - r * r)
+                    ts = (-b - np.sqrt(disc)) / (2 * a)
+                    t = np.where((disc >= 0) & (ts > 0), ts, np.inf)
                 else:
                     r, hgt = o["r"], o["h"]
                     a = ld[:, 0] ** 2 + ld[:, 1] ** 2

@@ -35,6 +35,7 @@ gripper:
   touch_links: [link5, link6, link7, usb_cam_link]   # 쥔 물체와 닿아도 되는 링크 — usb_cam_link: 카메라 충돌 상자(3×8×3 cm 근사)가 턱 사이 공간까지 내려와 쥔 토마토와 2 cm 겹친다(11-11 실기 · 실제 카메라는 얇은 보드라 안 닿음)
   side_reach: [0.03, 0.065] # 그리퍼 몸통(link5)이 손끝 y축 쪽(카메라 쪽)으로 튀어나온 거리 [m] — 메시 실측 6.6 cm
                             #   손목 방향을 고를 때 이 점들도 주변 물체와 떨어지게 한다 (가상: 옆 토마토 윗부분에 닿았다)
+  observe_open: true     # 보기 전에 턱을 끝까지 연다 — 닫힌 턱은 손목 카메라 화면 아래 32 % 를 가린다 · 0.8 rad 면 화면 밖(11-11 실기 촬영)
   held_points: 400       # (USB 카메라는 손가락 사이 확인을 하지 않는다)
 
 grasp_rules:             # 물체 치수 → 잡는 법 (scene.yaml 설명 참고)
@@ -78,7 +79,9 @@ camera:
   brightness: 0          # 🔴 usb_cam 은 안 주면 50 을 쓴다 → 흰 테이블이 포화·토마토 채도 36(인식 기준 90) → 검출 0 (11-11 실기)
                          #   0 에서 채도 90~94 · 다른 조명이면 화면(/edu_pick/debug_image)을 보고 조절 (−64~64)
   # 그리퍼 턱이 화면을 가리는 영역 [u, v] (0~1 · 왼쪽 위 0,0) — 그 안의 색은 버리고, 닿은 물체는 '가려짐'으로 집지 않는다
-  #   (11-11 실기 화면에서 그림 · 카메라와 그리퍼가 같은 link5 에 붙어 자세와 무관 · 턱을 열든 닫든 이 안에 든다)
+  #   (11-11 실기 화면에서 그림 · 카메라와 그리퍼가 같은 link5 에 붙어 자세와 무관 · 닫힘~중간 벌림의 턱이 이 안에 든다)
+  #   occlusion_clear_above: 그리퍼 각이 이 값[rad] 이상이면 턱이 화면 밖 → 가림 영역을 쓰지 않는다 (gripper.observe_open 과 짝)
+  occlusion_clear_above: 0.70
   occlusion_polygon: [[0.0, 0.73], [0.14, 0.68], [0.51, 0.45], [0.62, 0.46], [0.94, 0.62], [1.0, 0.70], [1.0, 1.0], [0.0, 1.0]]
   calibration_url: "file:///home/robot/.ros/camera_info/omx_cam.yaml"   # 보정 파일 (tools/omx_charuco_calib.py solve 가 만든 값) — 다른 PC 면 경로를 바꾸거나 ""  (예: file:///home/robot/.ros/camera_info/omx_cam.yaml) — 있으면 화각 대신 사용(왜곡도 편다)
 
@@ -148,8 +151,8 @@ detection:
     - {name: yellow, hsv: [[20, 100, 100], [35, 255, 255]], height: 0.030}
 
 # ─── 가상 물체 (mode:=sim) — color 는 위 detection.colors 의 이름 ───────────────────
-sim_objects:              # 실습 배치: 토마토 4알 (지름 약 5 cm) — 사진(2026-11-10)과 비슷하게
-  - {id: tomato_1, shape: round, color: red, xy: [0.15, 0.035],  size: [0.052, 0.052]}
-  - {id: tomato_2, shape: round, color: red, xy: [0.15, -0.035], size: [0.052, 0.052]}
-  - {id: tomato_3, shape: round, color: red, xy: [0.215, 0.035], size: [0.052, 0.052]}
-  - {id: tomato_4, shape: round, color: red, xy: [0.215, -0.035], size: [0.052, 0.052]}
+sim_objects:              # 실습 배치: 토마토 4알 (지름 약 5 cm) — 사진(2026-11-10)과 비슷하게 · ball: true = 공으로 그린다(없으면 원기둥)
+  - {id: tomato_1, shape: round, color: red, xy: [0.15, 0.035],  size: [0.052, 0.052], ball: true}
+  - {id: tomato_2, shape: round, color: red, xy: [0.15, -0.035], size: [0.052, 0.052], ball: true}
+  - {id: tomato_3, shape: round, color: red, xy: [0.215, 0.035], size: [0.052, 0.052], ball: true}
+  - {id: tomato_4, shape: round, color: red, xy: [0.215, -0.035], size: [0.052, 0.052], ball: true}
