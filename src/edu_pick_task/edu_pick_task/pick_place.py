@@ -850,7 +850,16 @@ class PickPlace(Node):
             self.attach_held(obj, obj.top_center.z - grip_z)
 
             self.step(7, "상승")
-            self.move_linear(above_z - grip_z, "상승")
+            # 쥐고 팔을 뻗으면 처져서(실기 OMX: 정면 20 cm 에서 2 cm) 쥔 물체 바닥이 0.8 cm 옆 이웃 토마토 윗면보다
+            #   낮게 남는다 → 다음 이동의 출발 상태가 무효(-2). lift_extra 만큼 더 올려 보고, 손이 안 닿으면 원래 높이로
+            extra = float(m.get("lift_extra", 0.0))
+            try:
+                self.move_linear(above_z - grip_z + extra, "상승")
+            except StepFailed:
+                if extra <= 0:
+                    raise
+                self.say(f"   → {extra * 100:.0f} cm 더 올리기는 손이 닿지 않음 — 원래 높이로")
+                self.move_linear(above_z - grip_z, "상승")
 
             # 놓을 때 손끝 높이 = 잡을 때 손끝이 물체 바닥에서 떨어진 높이 + 여유
             tall = gp["kind"] == "tall"
@@ -871,7 +880,20 @@ class PickPlace(Node):
             self.move_above(place_xy[0], place_xy[1], place_above, place_yaw, "하역 위치 이동")
 
             self.step(9, f"하강 {(place_above - release_z) * 100:.1f} cm")
-            self.move_linear(release_z - place_above, "하강")
+            # 고른 손목 방향(위에서 본 2D 여유)으로 하강이 막히면 ±15°·±30° 로 바꿔 다시 — 실기 넷째 칸: 60° 는 카메라 상자가
+            #   옆 칸 토마토 모델(원기둥) 윗모서리에 걸려 67 %, 45° 는 통과(11-12)
+            alts = [0] if not self.fixed_yaw else [0, -15, 15, -30, 30]
+            for i, d in enumerate(alts):
+                try:
+                    if d:
+                        self.say(f"   → 하강이 막힘 — 손목 {math.degrees(place_yaw) + d:.0f}° 로 다시")
+                        self.fixed_yaw = True
+                        self.move_above(place_xy[0], place_xy[1], place_above, place_yaw + math.radians(d), "하역 위치 이동")
+                    self.move_linear(release_z - place_above, "하강")
+                    break
+                except StepFailed as e:
+                    if i == len(alts) - 1 or "직선 경로" not in str(e):
+                        raise
 
             # 놓을 때는 물체 폭 + release_margin 만큼만 연다 (옆 칸 물체를 손가락으로 치지 않게)
             rel_pct = min(float(self.g["open_pct"]),
@@ -918,6 +940,9 @@ class PickPlace(Node):
                 done += 1
 
         self.step(12, "초기위치로 이동")
+        # 집을 것이 없어 끝날 때 남은 인식 물체가 장애물로 남아 있다 — 로봇 가까이(정면 11 cm)의 토마토 모델이
+        #   접은 자세의 카메라 상자와 겹쳐 home 이 목표 무효로 실패했다(11-12 실기). 시작 때 home 과 같은 조건으로 둔다
+        self.set_obstacles(list(self.placed))
         if self.g.get("observe_open"):
             self.gripper(0.0, "그리퍼 닫기")
         self.move_joints(poses["home"], "초기위치")
