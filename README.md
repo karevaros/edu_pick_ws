@@ -249,23 +249,51 @@ ros2 launch edu_pick_bringup pick_place.launch.py mode:=real robot_ip:=<제어�
 ros2 run edu_pick_task pick_place --step
 ```
 
-### 실습 4-B — OMX-F 조별 실기 (RB5 를 기다리는 동안)
-RB5 는 한 대뿐이라, 다른 조는 **ROBOTIS OMX-F**(5축 교육용 팔 + 그리퍼)와 **USB 웹캠**으로 같은 12단계 시나리오를 실제로 돌립니다.
+### 실습 4-B — OMX-F 조별 실기: 토마토 4알을 상자로 (RB5 를 기다리는 동안)
+RB5 는 한 대뿐이라, 다른 조는 **ROBOTIS OMX-F**(5축 교육용 팔 + 그리퍼)와 **손목 USB 카메라**로 같은 12단계 시나리오를 실제로 돌립니다.
 코드는 같고 `robot:=omx` · `--robot omx` 만 다릅니다. 설정 파일은 `config/scene_omx.yaml`.
 
-준비: OMX-F 전원(12 V) · 제어 보드(OpenRB-150) USB 연결 · 웹캠을 작업 영역 위 약 55 cm 에 아래를 보게 고정 · 색깔 큐브(빨강·초록·파랑·노랑, 3 cm)
+**시나리오:** 로봇 앞에 놓인 토마토(모형 · 지름 약 5 cm) 4알을 하나씩 집어 오른쪽 상자의 네 칸에 넣는다.
+실기 확인(2026-11-12): 4알 연속 4/4 를 두 번 · 알당 30~39 초.
+
+**① 놓는 법 (조마다 같게 — 자로 잰다)**
+
+| 무엇 | 어디에 |
+|---|---|
+| 로봇 | 검은 받침판(두께 1 cm) 위 · 받침판을 책상에 **양쪽 클램프**로 고정 · 정면(x)이 책상 안쪽 |
+| 카메라 | 키트 카메라(Innomaker U20CAM-720P)를 그리퍼 몸통의 브래킷에 장착 · **렌즈 덮개를 벗긴다** |
+| 상자 | 로봇 **오른쪽**. 로봇 쪽 뒤 모서리가 1번 모터 축에서 **뒤로 4 cm · 오른쪽으로 9 cm**. 바깥 23(앞뒤) × 18(좌우) × 높이 6 cm |
+| 토마토 | 로봇 **정면 11~22 cm** · 좌우 ±9 cm 안 · 서로 1 cm 이상 띄운다. **23 cm 를 넘으면 집지 않는다** |
+
+상자 크기·위치가 다르면 `scene_omx.yaml` 의 `box` · `place.slots` 를 고친다(칸은 벽에서 토마토 반지름 + 2 cm 이상).
+바닥에 무늬가 있는 종이를 깔았다면 무늬가 물체로 잡히지 않는지 화면(`/edu_pick/debug_image`)으로 확인한다.
+
+**② 실행**
 ```bash
-ls /dev/ttyACM* /dev/video*                                   # 포트·카메라 확인
-ros2 launch edu_pick_bringup pick_place.launch.py robot:=omx mode:=real   # port_name:=/dev/ttyACM1 video_device:=/dev/video2 등
-ros2 run edu_pick_task go_pose --robot omx home               # 첫 구동: 초기자세로 (Enter 확인)
-ros2 run edu_pick_task pick_place --robot omx --step
+ls /dev/ttyACM* /dev/v4l/by-id/                               # 제어 보드·카메라가 보이는지
+# 터미널 1 — 로봇·카메라·MoveIt·RViz.  ⚠ 켜는 순간 토크가 들어간다: 팔이 접힌 자세인지 보고 켠다
+ros2 launch edu_pick_bringup pick_place.launch.py robot:=omx mode:=real   # 포트가 다르면 port_name:=/dev/ttyACM1
+# 약 10 초 기다린 뒤 터미널 2
+ros2 run edu_pick_task go_pose --robot omx home               # 초기자세 (Enter 로 확인 · 확인 없이 하려면 --yes)
+ros2 run edu_pick_task pick_place --robot omx --step --count 1   # 한 알 · 단계마다 Enter
+ros2 run edu_pick_task pick_place --robot omx --count 4          # 네 알 연속
 ```
-RB5 판과 다른 점:
-- **카메라에 깊이가 없다.** 물체를 **색**으로 찾고, 색마다 정해 둔 **높이**(`detection.colors`)의 윗면에 있다고 보고 위치를 계산한다. 높이가 다른 물체를 올리면 위치가 어긋난다.
-- **카메라 위치를 자로 재서** `camera_mount` 에 넣어야 한다. 1 cm 틀리면 집는 위치도 약 1 cm 틀린다.
-- 5축이라 '위에서 집기'만 된다(손끝 아래 방향 + 손목 회전). 손이 닿는 범위는 로봇 앞 약 8~26 cm.
-- 그리퍼는 전류 제한으로 쥔다(물체에 닿으면 그 힘에서 멈춘다). 놓은 뒤 '손가락 사이 확인'은 하지 않는다.
-- 로봇 없이 미리 해 보기: `ros2 launch edu_pick_bringup pick_place.launch.py robot:=omx` (가짜 하드웨어 + 가상 웹캠)
+- **끌 때는 팔을 손으로 받치고** 터미널 1 에서 Ctrl+C — 토크가 꺼지면 팔이 내려앉는다.
+- 중간에 멈췄으면: 손에 든 것이 없는지 보고 → `go_pose --robot omx --grip 0 --yes` → `go_pose --robot omx home --yes`.
+  이미 상자에 넣은 알이 있으면 `--first-slot <넣은 개수>` 로 이어서 한다(예: 두 알 넣었으면 `--count 2 --first-slot 2`).
+- 로봇 없이 미리 해 보기: `ros2 launch edu_pick_bringup pick_place.launch.py robot:=omx` (가짜 하드웨어 + 가상 카메라) 후 같은 `pick_place` 명령.
+
+**③ 화면에서 볼 것 (RB5 판과 다른 점)**
+- **카메라에 깊이가 없다.** 물체를 **색**으로 찾고, 빨강은 공(토마토)으로 보고 화면 크기에서 지름·위치를 계산한다. 다른 색은 정해 둔 높이(`detection.colors`)의 윗면에 있다고 본다.
+- **보기 전에 그리퍼를 끝까지 연다.** 닫힌 턱은 손목 카메라 화면 아래 1/3 을 가린다 — 열면 화면에서 사라진다(`gripper.observe_open`).
+- **팔이 처진다.** 다이나믹셀은 뻗으면 1~2 cm 내려앉는다. 그래서 집은 뒤 2 cm 더 올리고(`lift_extra`), 상자 벽을 계획에서 3 cm 높게 본다(`box.plan_margin_z`).
+- **손목 방향을 고른다.** 그리퍼 한쪽에 카메라가 튀어나와 있어, 옆 토마토·상자 벽에서 먼 쪽으로 돌려 내려간다. 막히면 다른 방향으로 다시 시도하고(`하강이 막힘 — 손목 …° 로 다시`), 이웃에 둘러싸여 내려갈 길이 없는 알은 건너뛰고 바깥 알부터 집는다.
+- 5축이라 '위에서 집기'만 된다. 그리퍼는 전류 제한으로 쥔다(닿으면 그 힘에서 멈춘다).
+- 결과 확인은 "원래 자리에 비슷한 크기가 아직 보이는가"로 한다. 빈손으로 닫히며 토마토를 밀어낸 경우는 성공으로 잘못 볼 수 있다 — **상자 안을 눈으로 센다.**
+
+**④ 값이 안 맞을 때**
+- 인식 위치가 1 cm 넘게 어긋난다 → 카메라 보정: `python3 tools/make_charuco_board.py`(A4 판 인쇄) → `python3 tools/omx_charuco_calib.py capture` → `solve` → 나온 `camera_mount`·보정 파일 경로를 `scene_omx.yaml` 에 넣는다.
+- 팔 뻗은 자세로 오래 두지 않는다(3번 모터 과부하 오류 이력) — 끝나면 home.
 
 ---
 
@@ -316,6 +344,14 @@ ros2 run edu_pick_task go_pose home              # scene.yaml 의 home / observe
 2. `cb_simulation:=false` → `--step` 으로 **물체 없이** 한 번 → 물체 놓고 한 번
 3. 손가락 중심이 물체 중심에서 어긋나면 `gripper.flange_x_offset`(닫힘 방향)·`flange_z_offset`(카메라 쪽)으로 맞춘다(이 실습실: X +10 mm · Z +5 mm, 육안). 높이가 어긋나면 `gripper.tip_open`·`tip_closed`(플랜지→손끝 실측)·`camera_mount` 를 확인한다. RG2 는 닫을수록 손끝이 앞으로 나온다(실측 20.5 → 24 cm).
 
+**OMX-F 조별 키트 (실습 4-B)** — 조마다 한 번
+- [ ] 받침판을 **양쪽 클램프**로 고정 · 상자를 자로 재서 놓는다(1번 모터 축 기준 뒤 4·오른쪽 9 cm). 상자가 밀리면 다음 알이 벽에 걸린다.
+- [ ] `ls /dev/ttyACM*` 로 포트 확인 · 권한 오류면 `dialout` 그룹(install.sh 가 추가 — **다시 로그인해야 적용**).
+- [ ] launch 후 `ros2 control list_controllers` 에 3개가 `active` · `go_pose --robot omx home` → `observe` 가 오류 없이 되는지.
+- [ ] `rqt_image_view /edu_pick/debug_image` 로 토마토 4알이 초록 테두리(집을 수 있음)로 잡히는지. 빨간 테두리면 사유가 터미널에 나온다.
+- [ ] 값은 **개발 실습실의 키트 1대 기준**이다(카메라 장착 위치·렌즈 보정·팔 처짐). 다른 키트에서 인식 위치가 1 cm 넘게 어긋나면 4-B ④의 보정을 한다.
+- [ ] 학생에게: 켜기 전 팔이 접힌 자세인지 · **끌 때 팔 받치기** · 실행 중 손을 작업 영역에 넣지 않기.
+
 **시나리오 옵션** (`ros2 run edu_pick_task pick_place …`)
 
 | 옵션 | 뜻 |
@@ -348,6 +384,13 @@ python3 ~/edu_pick_ws/tools/timing_report.py ~/edu_pick_runs/* -o report.md
 | `✕ 가장자리에 잘림` | 물체가 시야나 인식 영역 경계에 걸려 크기를 알 수 없음. 물체를 안쪽으로 |
 | 실행 중 `Unexpected robot state changed` | ① 제어박스 **인박스(안전 영역)** 를 벗어남 — 펜던트 설정 확인 ② 네트워크 지연 — 유선 연결, 무선이면 `servo_t2:=0.1` ③ 펜던트 조작·재연결 |
 | move_group 로그의 `No 3D sensor plugin(s) defined` | 정상(이 실습은 옥토맵을 쓰지 않는다) |
+| (OMX) `✕ 손이 닿지 않음(로봇에서 24 cm > 23 cm)` | 토마토를 로봇 쪽으로 옮긴다(정면 22 cm 안) |
+| (OMX) `✕ 그리퍼에 가려짐` | 그리퍼가 안 열린 채 봤다 — `gripper.observe_open: true` 인지, 그리퍼 모터가 움직이는지 확인 |
+| (OMX) 인식 0개 · 화면이 하얗다 | `camera.brightness`(기본 0)를 낮춘다. 화면이 검으면 렌즈 덮개 |
+| (OMX) `go_pose` 가 아무 반응 없이 멈춰 있다 | Enter 를 기다리는 중이다(스크립트로 부를 때는 `--yes`) |
+| (OMX) `경로 계획 실패 (오류 코드 -2)` 가 시작하자마자 | 출발 자세가 모델상 충돌 — 그리퍼가 열린 채 접혀 있다: `go_pose --robot omx --grip 0 --yes` 후 다시 |
+| (OMX) 팔이 상자를 민다 · 상자 안에서 멈춘다 | 상자 위치가 `scene_omx.yaml` 의 `box` 와 다르다 — 자로 다시 맞춘다 |
+| (OMX) 팔이 저절로 내려앉고 명령을 안 따른다 | 모터 과부하 오류 — 팔을 받치고 launch 를 껐다 켠다(드라이버가 재부팅) |
 
 ---
 

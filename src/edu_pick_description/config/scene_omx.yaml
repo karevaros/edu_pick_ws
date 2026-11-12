@@ -83,7 +83,10 @@ camera:
   #   occlusion_clear_above: 그리퍼 각이 이 값[rad] 이상이면 턱이 화면 밖 → 가림 영역을 쓰지 않는다 (gripper.observe_open 과 짝)
   occlusion_clear_above: 0.70
   occlusion_polygon: [[0.0, 0.73], [0.14, 0.68], [0.51, 0.45], [0.62, 0.46], [0.94, 0.62], [1.0, 0.70], [1.0, 1.0], [0.0, 1.0]]
-  calibration_url: "file:///home/robot/.ros/camera_info/omx_cam.yaml"   # 보정 파일 (tools/omx_charuco_calib.py solve 가 만든 값) — 다른 PC 면 경로를 바꾸거나 ""  (예: file:///home/robot/.ros/camera_info/omx_cam.yaml) — 있으면 화각 대신 사용(왜곡도 편다)
+  # 렌즈 보정 파일 — 있으면 화각 대신 사용(왜곡도 편다). package://<패키지>/<경로> 는 launch 가 설치 경로로 바꿔 준다
+  #   기본값 = 키트 카메라(Innomaker U20CAM-720P · 640×480)를 개발 실습실에서 보정한 값. 같은 모델이면 그대로 써도 되고,
+  #   인식 위치가 어긋나면 tools/omx_charuco_calib.py 로 다시 보정해 그 파일 경로(file:///…)를 넣는다 · "" = 화각으로 근사
+  calibration_url: "package://edu_pick_description/config/omx_cam.yaml"
 
 # ─── 실습 시나리오 ────────────────────────────────────────────────────────────
 # 관절 자세 [deg] : joint1 … joint5

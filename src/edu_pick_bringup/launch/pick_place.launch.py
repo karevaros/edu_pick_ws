@@ -102,6 +102,18 @@ def _read(path):
         return f.read()
 
 
+def _calib_url(url):
+    """보정 파일 주소. package://<패키지>/<경로> → file://<설치 경로>/<경로> (PC 마다 경로가 달라도 되게).
+    파일이 없으면 "" (화각으로 근사 — usb_cam 이 없는 파일을 열다 경고만 내고 보정 없이 도는 것을 분명히 한다)"""
+    if url.startswith("package://"):
+        pkg, _, rel = url[len("package://"):].partition("/")
+        url = "file://" + os.path.join(get_package_share_directory(pkg), rel)
+    if url.startswith("file://") and not os.path.exists(url[len("file://"):]):
+        print(f"[pick_place] 카메라 보정 파일 없음: {url} — 화각(hfov_deg)으로 근사합니다")
+        return ""
+    return url
+
+
 def _on(value):
     """launch 인자 문자열 → bool"""
     return value.lower() in ("true", "1")
@@ -250,7 +262,7 @@ def _setup_omx(context):
                                        "image_width": int(cam["width"]), "image_height": int(cam["height"]),
                                        "pixel_format": "mjpeg2rgb", "framerate": 15.0,
                                        "camera_name": "omx_cam", "frame_id": "usb_cam_optical_frame",
-                                       "camera_info_url": cam.get("calibration_url", "") or "",
+                                       "camera_info_url": _calib_url(cam.get("calibration_url", "") or ""),
                                        # usb_cam 은 시작할 때 자기 기본값(brightness 50)을 카메라에 쓴다 → 화면이 하얗게 날아가
                                        # 빨강 채도가 36 까지 떨어져 토마토가 안 잡혔다(2026-11-11 실기) → scene 값으로 지정
                                        "brightness": int(cam.get("brightness", 0))}]))
