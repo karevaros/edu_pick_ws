@@ -896,6 +896,10 @@ class PickPlace(Node):
                 self.say(f"   ✕ 물체가 아직 손에 있음(점 {n}개) — 열기 다시 {retry + 1}/2")
                 self.gripper(self.grip_open, "다시 열기")
             self.move_linear(place_above - release_z - lift, "상승")
+            # 턱을 모은다 — 벌린 턱(link6)이 계획용으로 높인 상자 벽과 2 mm 겹쳐 다음 이동의 출발 상태가 무효(-2)였다
+            #   (11-12 실기 셋째 칸: 처짐으로 손끝이 벽 쪽 1 cm 밀림 · 닫으면 유효)
+            if self.g.get("observe_open"):
+                self.gripper(0.0, "그리퍼 닫기")
             # 놓은 물체는 손이 빠져나온 '뒤에' 장애물로 등록한다(손가락이 둘러싼 채로 넣으면 시작부터 충돌)
             it = self.as_item(obj, oid=f"placed_{first_slot + k}")
             it.update(x=place_xy[0], y=place_xy[1], bottom=self.table_z)
